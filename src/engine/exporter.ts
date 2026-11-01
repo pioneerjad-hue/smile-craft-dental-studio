@@ -204,6 +204,46 @@ ${s.plan.notes ? `<h2>Notes</h2><p>${esc(s.plan.notes)}</p>` : ''}
   w.document.close();
 }
 
+/** Wrap a doctor package and the viewer runtime into one HTML document. */
+async function doctorHtml(pkg: Uint8Array, title: string): Promise<string> {
+  const runtime = (await import('../../dist-doctor/runtime.js?raw')).default as string;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title></head><body><div>Loading treatment plan…</div><script>window.__SMILE_CASE__="${toBase64(pkg)}";</script><script>${runtime.replace(/<\/script/gi, '<\\/script')}</script></body></html>`;
+}
+
+/**
+ * Doctor viewer straight from stage models exported by other software (e.g. Maestro → STL per
+ * stage): no segmentation or planning needed.
+ */
+export async function exportSeriesViewer(files: { arch: Arch; stage: number; name: string; buffer: ArrayBuffer }[], notes: string, colorize: boolean) {
+  const s = getState();
+  setState({ busy: 'Reading exported stages…' });
+  await new Promise((r) => setTimeout(r, 0));
+  try {
+    const { parseScan } = await import('../geometry/io');
+    const { buildSeriesPackage } = await import('../doctor/seriesPayload');
+    const arches: Partial<Record<Arch, { stage: number; name: string; geometry: ReturnType<typeof parseScan> }[]>> = {};
+    for (const f of files) (arches[f.arch] ??= []).push({ stage: f.stage, name: f.name, geometry: parseScan(f.buffer, f.name) });
+    const { pkg, stages } = buildSeriesPackage({
+      arches,
+      lab: s.lab,
+      caseInfo: { patientName: s.caseInfo.patientName, caseId: s.caseInfo.caseId, clinician: s.caseInfo.clinician, notes: s.caseInfo.notes },
+      notes,
+      colorize,
+      onProgress: (text) => setState({ busy: text }),
+    });
+    setState({ busy: 'Writing viewer…' });
+    await new Promise((r) => setTimeout(r, 0));
+    const title = `${s.lab.name ? s.lab.name + ' — ' : ''}Treatment plan ${s.caseInfo.caseId || s.caseInfo.patientName}`;
+    const html = await doctorHtml(pkg, title);
+    download(html, `${safeName(s.caseInfo.caseId || s.caseInfo.patientName)}_doctor-viewer.html`, 'text/html');
+    toast(`Doctor viewer exported: ${stages} aligners (${(html.length / 1048576).toFixed(1)} MB).`, 'success');
+  } catch (e) {
+    toast(`Doctor viewer failed: ${(e as Error).message}`, 'error');
+  } finally {
+    setState({ busy: null });
+  }
+}
+
 /** Base64 of a large byte array (chunked to stay within call-stack limits). */
 function toBase64(bytes: Uint8Array): string {
   let bin = '';
@@ -221,10 +261,9 @@ export async function exportDoctorViewer() {
   await new Promise((r) => setTimeout(r, 0));
   try {
     const { buildDoctorPackage } = await import('../doctor/payload');
-    const runtime = (await import('../../dist-doctor/runtime.js?raw')).default as string;
     const pkg = buildDoctorPackage(s.lab);
     const title = `${s.lab.name ? s.lab.name + ' — ' : ''}Treatment plan ${s.caseInfo.caseId || s.caseInfo.patientName}`;
-    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title></head><body><div>Loading treatment plan…</div><script>window.__SMILE_CASE__="${toBase64(pkg)}";</script><script>${runtime.replace(/<\/script/gi, '<\\/script')}</script></body></html>`;
+    const html = await doctorHtml(pkg, title);
     download(html, `${safeName(s.caseInfo.caseId || s.caseInfo.patientName)}_doctor-viewer.html`, 'text/html');
     toast(`Doctor viewer exported (${(html.length / 1048576).toFixed(1)} MB). Send it by email or WhatsApp.`, 'success');
   } catch (e) {

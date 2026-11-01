@@ -7,6 +7,7 @@ import { loadProjectZip, readAutosave } from '../../engine/project';
 import { setState, toast, useStudio } from '../../engine/store';
 import { studio } from '../../engine/studio';
 import { goToStep } from '../App';
+import { SeriesViewerPanel } from './SeriesViewerPanel';
 
 function guessArch(name: string): Arch | null {
   const n = name.toLowerCase();
@@ -239,6 +240,7 @@ export function ImportPanel() {
       </div>
 
       <M3dImport />
+      <SeriesViewerPanel />
 
       <div className="section">
         <h3>Try it</h3>

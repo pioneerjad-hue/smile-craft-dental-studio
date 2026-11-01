@@ -17,8 +17,26 @@ export interface DoctorArchMeta {
   pontics: { file: string; id: number; stageFrom: number }[];
 }
 
+/** Exported stage models (no plan): one model per aligner stage. */
+export interface SeriesArchMeta {
+  stages: number;
+  /** Shared layout: stage 0 positions + per-stage deltas; otherwise one mesh per stage. */
+  shared: boolean;
+  vertexCount: number;
+  scale: [number, number, number];
+  offset: [number, number, number];
+  /** Per-vertex tooth (1) / gum (0) flags for colouring, when available. */
+  colored: boolean;
+  /** Original file name of each stage. */
+  names: string[];
+}
+
 export interface DoctorMeta {
   format: typeof DOCTOR_FORMAT;
+  /** 'plan' (default): planned in Smile Craft. 'series': exported stage models only. */
+  mode?: 'plan' | 'series';
+  series?: Partial<Record<'upper' | 'lower', SeriesArchMeta>>;
+  doctorNotes?: string;
   createdAt: string;
   lab: { name: string; email: string; whatsapp: string };
   caseInfo: { patientName: string; caseId: string; clinician: string; notes: string };

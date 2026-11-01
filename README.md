@@ -57,6 +57,13 @@ occlusion, with **Approve** / **Request changes** buttons that prepare the reply
 WhatsApp. Opens offline in any browser, including phones (≈ 2–10 MB per case). The lab name, email and
 WhatsApp number are remembered on the computer.
 
+**Doctor viewer from a Maestro export** (Case & scans → *Doctor viewer from a Maestro export*): pick the
+folder of stage models exported from Maestro (STL per stage, upper and lower; add the `.m3d` to fill in
+patient and doctor). Arch and stage come from the file names, the models are oriented automatically and
+teeth/gum coloured by auto-segmentation, and the same single-file viewer is produced — no segmentation or
+planning needed. Stages that share one mesh layout are stored as differences (small files, smooth
+animation); otherwise each stage is kept as its own model.
+
 **Occlusion**: overjet, overbite and midline (initial → final) in the analysis panel and report.
 
 **3D navigator** (Plan step): drag the arrows to translate the selected tooth (red mesio-distal, green

@@ -126,9 +126,10 @@ function main() {
       <div class="stats">
         <div><b>${total}</b><span>aligners</span></div>
         <div><b>${Math.ceil((total * meta.daysPerStage) / 7)}</b><span>weeks</span></div>
-        <div><b>${meta.ipr.length}</b><span>IPR contacts</span></div>
+        ${meta.mode === 'series' ? `<div><b>${meta.archStages.upper || '–'}/${meta.archStages.lower || '–'}</b><span>upper / lower</span></div>` : `<div><b>${meta.ipr.length}</b><span>IPR contacts</span></div>`}
       </div>
       <div class="actions"><button class="primary" id="approve">✓ Approve</button><button class="warn" id="changes">✎ Request changes</button></div>
+      ${meta.doctorNotes ? `<div><h3>Notes from the lab</h3><div style="white-space:pre-wrap">${esc(meta.doctorNotes)}</div></div>` : ''}
       ${
         meta.occlusion.initial
           ? `<div><h3>Occlusion (initial → final)</h3><table>
@@ -137,7 +138,7 @@ function main() {
             .join('')}</table></div>`
           : ''
       }
-      <div><h3>IPR</h3>${
+      ${meta.mode === 'series' ? '' : `<div><h3>IPR</h3>${
         meta.ipr.length
           ? `<table><tr><th>Contact</th><th>mm</th><th>Before aligner</th></tr>${meta.ipr
               .slice()
@@ -145,20 +146,20 @@ function main() {
               .map((e) => `<tr><td>${e.contact}</td><td>${e.amountMm.toFixed(2)}</td><td>${e.stage}</td></tr>`)
               .join('')}</table>`
           : '<div class="note">None</div>'
-      }</div>
-      <div><h3>Attachments</h3>${
+      }</div>`}
+      ${meta.mode === 'series' ? '' : `<div><h3>Attachments</h3>${
         meta.teeth.some((t) => t.attachments.length)
           ? `<table>${meta.teeth
               .filter((t) => t.attachments.length)
               .map((t) => `<tr><td>${t.id}</td><td>${t.attachments.join(', ')}</td></tr>`)
               .join('')}</table>`
           : '<div class="note">None</div>'
-      }</div>
-      <div><h3>Tooth movements (final)</h3><table><tr><th>Tooth</th><th title="mesial + / distal −">M/D</th><th title="buccal + / lingual −">B/L</th><th title="extrusion + / intrusion −">E/I</th><th>Tip°</th><th>Torq°</th><th>Rot°</th></tr>
+      }</div>`}
+      ${meta.mode === 'series' ? '' : `<div><h3>Tooth movements (final)</h3><table><tr><th>Tooth</th><th title="mesial + / distal −">M/D</th><th title="buccal + / lingual −">B/L</th><th title="extrusion + / intrusion −">E/I</th><th>Tip°</th><th>Torq°</th><th>Rot°</th></tr>
         ${moving
           .map((t) => `<tr><td>${t.id}${t.extracted ? ' (ext.)' : ''}</td><td>${fmt(t.movement.mesial)}</td><td>${fmt(t.movement.buccal)}</td><td>${fmt(t.movement.extrusion)}</td><td>${fmt(t.movement.tip, 0)}</td><td>${fmt(t.movement.torque, 0)}</td><td>${fmt(t.movement.rotation, 0)}</td></tr>`)
           .join('')}</table>
-        <div class="note">mm and degrees, in each tooth's own axes.</div></div>
+        <div class="note">mm and degrees, in each tooth's own axes.</div></div>`}
       ${meta.planNotes ? `<div><h3>Notes</h3><div>${esc(meta.planNotes)}</div></div>` : ''}
       <div class="note">Simulation for planning purposes. Final tooth positions depend on biological response and patient compliance.</div>
     </aside>
@@ -266,6 +267,103 @@ function main() {
     };
   }
 
+  // ───── exported stage models (series mode)
+  interface SeriesRuntime {
+    meta: import('./format').SeriesArchMeta;
+    mesh: Mesh;
+    ghost: Mesh | null;
+    base: Float32Array;
+    deltas: Int16Array[];
+    meshes: { pos: Float32Array; index: Uint32Array }[];
+    shown: number;
+  }
+  const series: Partial<Record<Arch, SeriesRuntime>> = {};
+  for (const arch of ['upper', 'lower'] as Arch[]) {
+    const sm = meta.series?.[arch];
+    if (!sm) continue;
+    const dq = (q: Int16Array) => {
+      const p = new Float32Array(q.length);
+      for (let i = 0; i < q.length; i++) p[i] = q[i] * sm.scale[i % 3] + sm.offset[i % 3];
+      return p;
+    };
+    const stone = new Color('#ece6da');
+    const geom = new BufferGeometry();
+    let base = new Float32Array(0);
+    const deltas: Int16Array[] = [];
+    const meshes: SeriesRuntime['meshes'] = [];
+    let ghost: Mesh | null = null;
+    if (sm.shared) {
+      base = dq(view(Int16Array, files[`${arch}.pos0`], 2));
+      for (let k = 1; k < sm.stages; k++) deltas.push(view(Int16Array, files[`${arch}.d${k}`], 2));
+      const index = view(Uint32Array, files[`${arch}.idx`], 4);
+      geom.setAttribute('position', new BufferAttribute(base.slice(), 3));
+      geom.setIndex(new BufferAttribute(index, 1));
+      const col = new Float32Array(base.length);
+      const flags = sm.colored ? files[`${arch}.tooth`] : null;
+      for (let i = 0; i < sm.vertexCount; i++) {
+        const cc = flags ? (flags[i] ? tooth : gum) : stone;
+        col.set([cc.r, cc.g, cc.b], 3 * i);
+      }
+      geom.setAttribute('color', new BufferAttribute(col, 3));
+      if (flags) {
+        const gIdx: number[] = [];
+        for (let f = 0; f < index.length; f += 3) if (flags[index[f]] && flags[index[f + 1]] && flags[index[f + 2]]) gIdx.push(index[f], index[f + 1], index[f + 2]);
+        const gg = new BufferGeometry();
+        gg.setAttribute('position', new BufferAttribute(base, 3));
+        gg.setIndex(gIdx);
+        ghost = new Mesh(gg, new MeshBasicMaterial({ color: 0x3d8bfd, transparent: true, opacity: 0.35, depthWrite: false, side: DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 8 }));
+        ghost.visible = false;
+        scene.add(ghost);
+      }
+    } else {
+      for (let k = 0; k < sm.stages; k++) meshes.push({ pos: dq(view(Int16Array, files[`${arch}.m${k}.pos`], 2)), index: view(Uint32Array, files[`${arch}.m${k}.idx`], 4) });
+      base = meshes[0].pos;
+      geom.setAttribute('position', new BufferAttribute(meshes[0].pos, 3));
+      geom.setIndex(new BufferAttribute(meshes[0].index, 1));
+      const col = new Float32Array(meshes[0].pos.length).fill(0);
+      for (let i = 0; i < col.length; i += 3) col.set([stone.r, stone.g, stone.b], i);
+      geom.setAttribute('color', new BufferAttribute(col, 3));
+    }
+    geom.computeVertexNormals();
+    const mesh = new Mesh(geom, new MeshStandardMaterial({ vertexColors: true, roughness: 0.55, side: DoubleSide }));
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+    series[arch] = { meta: sm, mesh, ghost, base, deltas, meshes, shown: 0 };
+  }
+  const applySeries = (stage: number) => {
+    for (const a of Object.values(series)) {
+      if (!a) continue;
+      const last = a.meta.stages - 1;
+      const st = Math.min(stage, last);
+      if (a.meta.shared) {
+        const pos = (a.mesh.geometry.getAttribute('position') as BufferAttribute).array as Float32Array;
+        const s0 = Math.floor(st), s1 = Math.min(last, s0 + 1), f = st - s0;
+        const d0 = s0 > 0 ? a.deltas[s0 - 1] : null, d1 = s1 > 0 ? a.deltas[s1 - 1] : null;
+        const sc = a.meta.scale;
+        for (let i = 0; i < pos.length; i++) {
+          const q = (d0 ? d0[i] * (1 - f) : 0) + (d1 ? d1[i] * f : 0);
+          pos[i] = a.base[i] + q * sc[i % 3];
+        }
+        a.mesh.geometry.getAttribute('position').needsUpdate = true;
+        a.mesh.geometry.computeVertexNormals();
+      } else {
+        const k = Math.round(st);
+        if (k !== a.shown) {
+          const m = a.meshes[k];
+          a.mesh.geometry.setAttribute('position', new BufferAttribute(m.pos, 3));
+          const col = new Float32Array(m.pos.length);
+          const stone = new Color('#ece6da');
+          for (let i = 0; i < col.length; i += 3) col.set([stone.r, stone.g, stone.b], i);
+          a.mesh.geometry.setAttribute('color', new BufferAttribute(col, 3));
+          a.mesh.geometry.setIndex(new BufferAttribute(m.index, 1));
+          a.mesh.geometry.computeVertexNormals();
+          a.shown = k;
+        }
+      }
+      if (a.ghost) a.ghost.visible = showGhost && a.mesh.visible && stage > 0.01;
+    }
+  };
+
   /** Tooth matrices at a (fractional) stage: linear blend between neighbouring stages. */
   const matricesAt = (a: ArchRuntime, stage: number) => {
     const n = a.meta.teeth.length;
@@ -282,6 +380,7 @@ function main() {
 
   const v = new Vector3();
   const apply = (stage: number) => {
+    applySeries(stage);
     for (const a of Object.values(arches)) {
       if (!a) continue;
       const T = matricesAt(a, stage);
@@ -331,7 +430,7 @@ function main() {
 
   // views (patient coordinates: +X right, +Y anterior, +Z up)
   const box = { min: new Vector3(Infinity, Infinity, Infinity), max: new Vector3(-Infinity, -Infinity, -Infinity) };
-  for (const a of Object.values(arches)) {
+  for (const a of [...Object.values(arches), ...Object.values(series)]) {
     if (!a) continue;
     for (let i = 0; i < a.base.length; i += 3) {
       box.min.min(v.set(a.base[i], a.base[i + 1], a.base[i + 2]));
@@ -360,16 +459,17 @@ function main() {
     controls.update();
   };
   let showGhost = false;
+  const meshOf = (arch: Arch) => arches[arch]?.mesh ?? series[arch]?.mesh;
   const setArch = (u: boolean, l: boolean) => {
-    if (arches.upper) arches.upper.mesh.visible = u;
-    if (arches.lower) arches.lower.mesh.visible = l;
+    if (meshOf('upper')) meshOf('upper')!.visible = u;
+    if (meshOf('lower')) meshOf('lower')!.visible = l;
     document.getElementById('tU')!.classList.toggle('on', u);
     document.getElementById('tL')!.classList.toggle('on', l);
     apply(stage);
   };
   document.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((b) => (b.onclick = () => setView(b.dataset.view!)));
-  document.getElementById('tU')!.onclick = () => setArch(!(arches.upper?.mesh.visible ?? false), arches.lower?.mesh.visible ?? false);
-  document.getElementById('tL')!.onclick = () => setArch(arches.upper?.mesh.visible ?? false, !(arches.lower?.mesh.visible ?? false));
+  document.getElementById('tU')!.onclick = () => setArch(!(meshOf('upper')?.visible ?? false), meshOf('lower')?.visible ?? false);
+  document.getElementById('tL')!.onclick = () => setArch(meshOf('upper')?.visible ?? false, !(meshOf('lower')?.visible ?? false));
   document.getElementById('tG')!.onclick = (e) => {
     showGhost = !showGhost;
     (e.target as HTMLElement).classList.toggle('on', showGhost);
