@@ -105,12 +105,31 @@ export function maxStep(frame: ToothFrame, m: Movement, n: number, samples: Vec3
 
 export function computeStaging(protocol: Protocol, teeth: StagingToothInput[]): StagingResult {
   const result: StagingResult = { totalStages: 0, archStages: { upper: 0, lower: 0 }, teeth: {}, weeks: 0 };
-  const needs = teeth.map((t) => ({ t, ...stagesNeeded(protocol, t) }));
+  const needs = teeth.map((t) => ({ t, layer: Math.max(1, Math.floor(t.plan.layer ?? 1)), ...stagesNeeded(protocol, t) }));
+
+  // Layers run in sequence: each layer starts when the previous one has finished.
+  const layers = [...new Set(needs.map((x) => x.layer))].sort((a, b) => a - b);
+  const layerStart = new Map<number, number>();
+  const layerEnd = new Map<number, number>();
+  const startOf = new Map<number, number>();
+  let cursor = 0;
+  for (const L of layers) {
+    layerStart.set(L, cursor);
+    let end = cursor;
+    for (const x of needs.filter((y) => y.layer === L)) {
+      const start = Math.max(Math.floor(x.t.plan.startStage), cursor);
+      startOf.set(x.t.plan.id, start);
+      if (x.n > 0) end = Math.max(end, start + x.n);
+    }
+    layerEnd.set(L, end);
+    cursor = end;
+  }
+  const lastMovingLayer = Math.max(1, ...needs.filter((x) => x.n > 0).map((x) => x.layer));
 
   for (const { t, n } of needs) {
     if (n === 0) continue;
     const arch = archOf(t.plan.id);
-    const end = Math.max(0, Math.floor(t.plan.startStage)) + n;
+    const end = startOf.get(t.plan.id)! + n;
     result.archStages[arch] = Math.max(result.archStages[arch], end);
   }
   if (protocol.staging.syncArches) {
@@ -119,11 +138,16 @@ export function computeStaging(protocol: Protocol, teeth: StagingToothInput[]): 
   }
   result.totalStages = Math.max(result.archStages.upper, result.archStages.lower);
 
-  for (const { t, n, factor } of needs) {
+  for (const { t, n, factor, layer } of needs) {
     const id = t.plan.id;
-    const start = Math.max(0, Math.floor(t.plan.startStage));
+    const start = startOf.get(id)!;
     const archTotal = result.archStages[archOf(id)];
-    const end = n === 0 ? start : protocol.staging.mode === 'synchronized' ? Math.max(archTotal, start + n) : start + n;
+    let end = start;
+    if (n > 0) {
+      if (protocol.staging.mode === 'maxRate') end = start + n;
+      // synchronized: finish with the arch in the last layer, with the layer otherwise
+      else end = layer >= lastMovingLayer ? Math.max(archTotal, start + n) : Math.max(layerEnd.get(layer)!, start + n);
+    }
     const span = Math.max(1, end - start);
     const perStage = scaleMovement(t.plan.movement, n === 0 ? 0 : 1 / span);
     result.teeth[id] = {

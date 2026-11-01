@@ -47,12 +47,18 @@ export const LAYER_LABEL: Record<LayerId, string> = {
 export interface ModelBuilder {
   enabled: boolean;
   thicknessMm: number;
+  /** Engrave "<case> U07" into each model's base. */
+  label: boolean;
+  /** Show and export aligner trim lines. */
+  trimLines: boolean;
+  trimOffsetMm: number;
 }
 
 export interface BaseReport {
   openEdges: number;
   holesFilled: number;
   borderVertices: number;
+  labelPlaced?: boolean;
 }
 
 export interface StudioState {
@@ -138,7 +144,7 @@ export const useStudio = create<StudioState>(() => ({
     lowerBase: { visible: true, opacity: 1, color: '#c9d3e0' },
     lowerRoots: { visible: false, opacity: 1, color: '#e8d9b5' },
   },
-  modelBuilder: { enabled: false, thicknessMm: 3 },
+  modelBuilder: { enabled: false, thicknessMm: 3, label: true, trimLines: false, trimOffsetMm: 1.5 },
   baseReport: {},
   missingTeeth: [18, 28, 38, 48],
   oriented: false,

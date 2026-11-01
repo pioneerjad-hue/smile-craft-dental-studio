@@ -91,6 +91,7 @@ export function ExportPanel() {
 function ModelBuilderSection() {
   const mb = useStudio((s) => s.modelBuilder);
   const report = useStudio((s) => s.baseReport);
+  const caseLabel = useStudio((s) => s.caseInfo.caseId || s.caseInfo.patientName || 'CASE');
   const set = (patch: Partial<typeof mb>) => setState({ modelBuilder: { ...mb, ...patch } });
   return (
     <div className="section">
@@ -104,6 +105,9 @@ function ModelBuilderSection() {
             <label>Base below scan</label>
             <NumberInput value={mb.thicknessMm} step={0.5} min={0.5} max={30} digits={1} onChange={(v) => set({ thicknessMm: v })} />
           </div>
+          <Check checked={mb.label} onChange={(v) => set({ label: v })}>
+            Engrave case & stage on the base (e.g. "{caseLabel} U07")
+          </Check>
           {(['upper', 'lower'] as Arch[]).map((a) => {
             const r = report[a];
             if (!r) return null;
@@ -111,7 +115,7 @@ function ModelBuilderSection() {
               <div className="row between small" key={a}>
                 <span style={{ textTransform: 'capitalize' }}>{a}</span>
                 {r.openEdges === 0 ? <span className="pill good">watertight ✓</span> : <span className="pill warn">{r.openEdges} open edges</span>}
-                <span className="muted">{r.holesFilled ? `${r.holesFilled} hole(s) filled` : 'no holes'}</span>
+                {mb.label && (r.labelPlaced ? <span className="pill good">label ✓</span> : <span className="pill warn">label does not fit</span>)}
               </div>
             );
           })}
@@ -121,6 +125,17 @@ function ModelBuilderSection() {
           </div>
         </>
       )}
+      <h3 style={{ marginTop: 10 }}>Aligner trim lines</h3>
+      <Check checked={mb.trimLines} onChange={(v) => set({ trimLines: v })}>
+        Show trim line and export it per stage (.pts)
+      </Check>
+      {mb.trimLines && (
+        <div className="field">
+          <label>Offset from teeth</label>
+          <NumberInput value={mb.trimOffsetMm} step={0.25} min={0.25} max={5} onChange={(v) => set({ trimOffsetMm: v })} />
+        </div>
+      )}
+      <div className="hint small">Scalloped line on the gingiva at this distance from the tooth margins, following the gum at every stage. Exported as x y z points (mm) for CNC/laser trimmers, in the same coordinates as the STL models.</div>
     </div>
   );
 }

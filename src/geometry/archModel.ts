@@ -543,9 +543,21 @@ export class ArchModel {
   }
 
   /** Compute deformed vertex positions for a set of rigid tooth transforms. */
-  deformedPositions(transforms: Map<number, Matrix4>, out?: Float32Array): Float32Array {
+  deformedPositions(transforms: Map<number, Matrix4>, out?: Float32Array, flatten?: Map<number, { point: Vector3; normal: Vector3 }>): Float32Array {
     const pos = out ?? new Float32Array(this.base.length);
     pos.set(this.base);
+    // Extracted teeth collapse onto a plane at their cervical level: a flat gum patch that keeps the
+    // mesh closed.
+    if (flatten) {
+      for (const [t, { point, normal }] of flatten) {
+        for (const i of this.toothVertices(t)) {
+          const d = (pos[3 * i] - point.x) * normal.x + (pos[3 * i + 1] - point.y) * normal.y + (pos[3 * i + 2] - point.z) * normal.z;
+          pos[3 * i] -= d * normal.x;
+          pos[3 * i + 1] -= d * normal.y;
+          pos[3 * i + 2] -= d * normal.z;
+        }
+      }
+    }
     if (transforms.size === 0) return pos;
     this.ensureGingivaWeights();
     const v = new Vector3();
@@ -571,9 +583,9 @@ export class ArchModel {
   }
 
   /** Apply transforms to the live geometry. */
-  deform(transforms: Map<number, Matrix4>): void {
+  deform(transforms: Map<number, Matrix4>, flatten?: Map<number, { point: Vector3; normal: Vector3 }>): void {
     const attr = this.geometry.getAttribute('position') as BufferAttribute;
-    this.deformedPositions(transforms, attr.array as Float32Array);
+    this.deformedPositions(transforms, attr.array as Float32Array, flatten);
     attr.needsUpdate = true;
     this.geometry.computeVertexNormals();
     this.geometry.computeBoundingSphere();

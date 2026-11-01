@@ -1,4 +1,6 @@
-import { useStudio } from '../../engine/store';
+import { useEffect, useState } from 'react';
+import type { Arch } from '../../core/fdi';
+import { toast, useStudio } from '../../engine/store';
 import { studio } from '../../engine/studio';
 import { goToStep } from '../App';
 
@@ -15,8 +17,9 @@ export function OrientPanel() {
   const PROMPTS = ['the incisal point between the two central incisors', "the mesio-buccal cusp of the patient's RIGHT first molar", "the mesio-buccal cusp of the patient's LEFT first molar"];
   return (
     <>
+      <RepairSection />
       <div className="section">
-        <h3>Model orientation</h3>
+        <h3>Orientation</h3>
         <div className="hint">
           Both arches are oriented together, so the bite is kept. Target: occlusal plane on the grid, midline on the red
           line, incisors toward the front. Segmentation, tooth axes and all movements use this orientation.
@@ -68,10 +71,82 @@ export function OrientPanel() {
           <span className="kbd">4</span> upper · <span className="kbd">5</span> lower.
         </div>
       </div>
+      {oriented && <TrimSection />}
       <div className="grow" />
       <button className="primary" onClick={() => goToStep('segment')}>
         Continue to segmentation →
       </button>
     </>
+  );
+}
+
+function confirmReset(): boolean {
+  return useStudio.getState().teeth.length === 0 || confirm('This changes the scan mesh and clears the segmentation of the changed arch. Continue?');
+}
+
+function RepairSection() {
+  return (
+    <div className="section">
+      <h3>Model repair</h3>
+      <div className="hint small">Removes floating scan debris and fills small holes (gaps under 20 mm around). The outer scan border stays open; the model builder closes it.</div>
+      <button
+        onClick={() => {
+          if (!confirmReset()) return;
+          const r = studio.repairScans();
+          toast(r.removed || r.filled ? `Removed ${r.removed} debris triangle(s), filled ${r.filled} hole(s).` : 'Scans are clean — nothing to repair.', 'success');
+        }}
+      >
+        ✦ Auto-repair scans
+      </button>
+    </div>
+  );
+}
+
+function TrimSection() {
+  const arches = useStudio((s) => s.arches);
+  const [keep, setKeep] = useState<Record<Arch, number>>({ upper: 22, lower: 20 });
+  const [active, setActive] = useState<Arch | null>(null);
+  useEffect(() => {
+    if (active) studio.previewTrim(active, keep[active]);
+    return () => {
+      studio.previewTrim('upper', null);
+      studio.previewTrim('lower', null);
+    };
+  }, [active, keep]);
+  return (
+    <div className="section">
+      <h3>Trim (cut and close)</h3>
+      <div className="hint small">Cuts the scan with a plane parallel to the occlusal plane, keeping this height from the crown tops. The red plane previews the cut.</div>
+      {(['upper', 'lower'] as Arch[])
+        .filter((a) => arches[a])
+        .map((a) => (
+          <div key={a} className="card">
+            <div className="row between">
+              <span style={{ textTransform: 'capitalize' }}>{a}</span>
+              <b className="mono">{keep[a].toFixed(1)} mm</b>
+            </div>
+            <input
+              type="range"
+              min={8}
+              max={40}
+              step={0.5}
+              value={keep[a]}
+              onFocus={() => setActive(a)}
+              onPointerDown={() => setActive(a)}
+              onChange={(e) => setKeep({ ...keep, [a]: +e.target.value })}
+            />
+            <button
+              onClick={() => {
+                if (!confirmReset()) return;
+                studio.trimArch(a, keep[a]);
+                setActive(null);
+                toast(`${a} model trimmed.`, 'success');
+              }}
+            >
+              Apply trim
+            </button>
+          </div>
+        ))}
+    </div>
   );
 }

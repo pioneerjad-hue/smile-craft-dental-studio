@@ -1,6 +1,6 @@
 import { BufferAttribute, BufferGeometry, Color, Matrix4, Mesh, MeshStandardMaterial, Vector3 } from 'three';
 import type { Arch } from '../core/fdi';
-import { adjacentPairs, archOf, contactKey, sequence, toothNumber } from '../core/fdi';
+import { adjacentPairs, archOf, contactKey, contralateral, sequence, toothNumber } from '../core/fdi';
 import { computeStaging, movementAtStage } from '../core/staging';
 import type { StagingToothInput } from '../core/staging';
 import { movementMatrix, v3 } from '../core/transform';
@@ -13,6 +13,11 @@ import { buildModelBase, openEdgeCount } from '../geometry/modelBase';
 import { estimatePatientFrame, frameFromLandmarks, frameToMatrix } from '../geometry/orient';
 import { autoSegmentSeeds } from '../geometry/autoSegment';
 import { buildRootGeometry, segmentDistance } from '../geometry/roots';
+import { fillSmallHoles, removeSmallComponents, toGeometry, trimByPlane } from '../geometry/repair';
+import { gumDistanceToTeeth, trimLine } from '../geometry/trimLine';
+import { occlusionMetrics } from '../geometry/occlusion';
+import type { OcclusionMetrics } from '../geometry/occlusion';
+import type { Mesh as RawMesh } from '../geometry/repair';
 import type { ModelBase } from '../geometry/modelBase';
 import { archOcclusalNormal } from '../geometry/frames';
 import { ArchModel, crownHeightLimitMm, seedRadiusMm } from '../geometry/archModel';
@@ -80,6 +85,14 @@ export class Studio {
         this.updateLabels();
         this.viewer?.setGuides(s.step === 'orient');
       }
+      if (s.plan !== prev.plan) {
+        const ext = (p: TreatmentPlan) => Object.values(p.teeth).filter((t) => t.extracted).map((t) => t.id).join(',');
+        if (ext(s.plan) !== ext(prev.plan)) {
+          this.rebuildLayerIndices();
+          this.updateColors();
+        }
+        if (s.plan.pontics !== prev.plan.pontics) this.rebuildPontics();
+      }
       if (s.frames !== prev.frames) {
         this.rebuildRoots();
         this.updateLabels();
@@ -95,6 +108,7 @@ export class Studio {
         if (colorChanged) this.updateColors();
       }
       if (s.modelBuilder !== prev.modelBuilder || (s.frames !== prev.frames && s.modelBuilder.enabled)) this.rebuildBases();
+      if (s.modelBuilder !== prev.modelBuilder || s.stage !== prev.stage || s.step !== prev.step || s.plan !== prev.plan || s.frames !== prev.frames) this.updateTrimLines();
       if (s.tool !== prev.tool) this.applyTool();
       if (s.measurements !== prev.measurements) this.viewer?.setMeasurements(s.measurements, this.pendingMeasure);
       if (s.playing !== prev.playing) this.updatePlayback();
@@ -119,6 +133,7 @@ export class Studio {
     this.rebuildLayerIndices();
     this.rebuildBases();
     this.rebuildRoots();
+    this.rebuildPontics();
     this.updateLabels();
     this.applySettings(false);
     this.applyTool();
@@ -368,6 +383,7 @@ export class Studio {
   /** Called whenever labels change: refresh caches, frames, plan entries, colors and ghosts. */
   afterSegmentation(immediate = false) {
     this.bodies.clear();
+    this.trimDist = {};
     this.samples.clear();
     for (const arch of ARCHES) this.models[arch]?.invalidate();
     const teeth = ARCHES.flatMap((a) => this.models[a]?.teeth() ?? []).sort((a, b) => a - b);
@@ -533,6 +549,27 @@ export class Studio {
     return sug.length;
   }
 
+  /**
+   * Layer presets. 'distalization': 7s → layer 1, 6s → 2, 5s → 3, 4s → 4, 3s → 5, incisors → 6 in the
+   * chosen arch (classic sequential distalization). 'reset': every tooth back to layer 1.
+   */
+  applyLayerPreset(preset: 'distalization' | 'mesialization' | 'reset', arch: Arch) {
+    const plan = getState().plan;
+    const teeth: Record<number, ToothPlan> = {};
+    for (const [k, tp] of Object.entries(plan.teeth)) {
+      const id = +k;
+      let layer = tp.layer ?? 1;
+      if (archOf(id) === arch) {
+        const n = toothNumber(id);
+        if (preset === 'reset') layer = 1;
+        else if (preset === 'distalization') layer = n >= 7 ? 1 : n === 6 ? 2 : n === 5 ? 3 : n === 4 ? 4 : n === 3 ? 5 : 6;
+        else layer = n <= 2 ? 1 : n === 3 ? 2 : n === 4 ? 3 : n === 5 ? 4 : n === 6 ? 5 : 6;
+      }
+      teeth[id] = { ...tp, layer };
+    }
+    this.setPlan({ ...plan, teeth });
+  }
+
   setProtocol(protocol: Protocol) {
     setState({ protocol });
   }
@@ -649,15 +686,36 @@ export class Studio {
     return out;
   }
 
+  /** Extracted teeth collapse to a gum patch from the first aligner on. */
+  flattenAt(stage: number, arch?: Arch): Map<number, { point: Vector3; normal: Vector3 }> {
+    const { plan, frames } = getState();
+    const out = new Map<number, { point: Vector3; normal: Vector3 }>();
+    if (stage < 1) return out;
+    for (const tp of Object.values(plan.teeth)) {
+      if (!tp.extracted || (arch && archOf(tp.id) !== arch)) continue;
+      const f = frames[tp.id];
+      if (!f?.cervical) continue;
+      const n = v3(f.occlusal);
+      out.set(tp.id, { point: v3(f.cervical).addScaledVector(n, -0.3), normal: n });
+    }
+    return out;
+  }
+
+  /** Vertex positions of an arch at a stage (moved teeth, blended gum, extractions). */
+  positionsAt(arch: Arch, stage: number): Float32Array {
+    return this.models[arch]!.deformedPositions(this.transformsAt(stage, arch), undefined, this.flattenAt(stage, arch));
+  }
+
   applyStage(stageOverride?: number) {
     const v = this.viewer;
     const stage = stageOverride ?? getState().stage;
     for (const arch of ARCHES) {
       const m = this.models[arch];
       if (!m) continue;
-      m.deform(this.transformsAt(stage, arch));
+      m.deform(this.transformsAt(stage, arch), this.flattenAt(stage, arch));
       v?.markGeometryChanged(arch);
     }
+    this.updatePontics(stage);
     this.updateAttachmentMeshes(stage);
     this.updateRootMeshes(stage);
     this.updateAxes(stage);
@@ -814,8 +872,9 @@ export class Studio {
           col = cache.get(l)!;
           if (!col) {
             if (segmenting) col = l === activeTooth ? COLORS.selected : toothHue(l);
+            else if (plan.teeth[l]?.extracted) col = gumColor[arch];
             else if (l === selectedTooth) col = COLORS.selected;
-            else if (plan.teeth[l]?.locked || plan.teeth[l]?.extracted) col = COLORS.locked;
+            else if (plan.teeth[l]?.locked) col = COLORS.locked;
             else col = toothColor[arch];
             cache.set(l, col);
           }
@@ -845,9 +904,10 @@ export class Studio {
       const teeth: number[] = [];
       const seam: number[] = [];
       const L = m.labels;
+      const ext = new Set(Object.values(getState().plan.teeth).filter((t) => t.extracted).map((t) => t.id));
       for (let f = 0; f < m.faceCount; f++) {
         const a = m.index[3 * f], b = m.index[3 * f + 1], c = m.index[3 * f + 2];
-        if (!(L[a] && L[b] && L[c])) gum.push(a, b, c);
+        if (!(L[a] && L[b] && L[c]) || ext.has(L[a]) || ext.has(L[b]) || ext.has(L[c])) gum.push(a, b, c);
         else if (L[a] === L[b] && L[b] === L[c]) teeth.push(a, b, c);
         else seam.push(a, b, c);
       }
@@ -867,18 +927,55 @@ export class Studio {
     return archOcclusalNormal(this.models[arch]!, []);
   }
 
-  /** Model base (printable solid closure) for an arch, or null when the model builder is off. */
-  baseFor(arch: Arch): ModelBase | null {
-    if (!getState().modelBuilder.enabled || !this.models[arch]) return null;
+  /** Text engraved into the base of a stage model, e.g. "SC-0142 U07". */
+  labelText(arch: Arch, stage: number): string {
+    const id = getState().caseInfo.caseId.trim() || getState().caseInfo.patientName.trim() || 'CASE';
+    return `${id.slice(0, 14)} ${arch === 'upper' ? 'U' : 'L'}${String(stage).padStart(2, '0')}`;
+  }
+
+  /**
+   * Model base (printable solid closure) for an arch, or null when the model builder is off. With a
+   * stage, the base carries that stage's engraved label (built fresh); without, the cached base.
+   */
+  baseFor(arch: Arch, stage?: number): ModelBase | null {
+    const mb = getState().modelBuilder;
+    if (!mb.enabled || !this.models[arch]) return null;
+    const anterior = getState().oriented ? new Vector3(0, 1, 0) : this.patientAxes().anterior;
+    if (mb.label && stage !== undefined) {
+      return buildModelBase(this.models[arch]!, this.archOcclusal(arch), { thicknessMm: mb.thicknessMm, label: this.labelText(arch, stage), labelUp: anterior });
+    }
     if (this.bases[arch] === undefined) {
-      this.bases[arch] = buildModelBase(this.models[arch]!, this.archOcclusal(arch), { thicknessMm: getState().modelBuilder.thicknessMm });
+      this.bases[arch] = buildModelBase(this.models[arch]!, this.archOcclusal(arch), {
+        thicknessMm: mb.thicknessMm,
+        label: mb.label ? this.labelText(arch, getState().stage) : undefined,
+        labelUp: anterior,
+      });
     }
     return this.bases[arch] ?? null;
   }
 
+  // ───────────────────────────── trim lines ─────────────────────────────
+  private trimDist: Partial<Record<Arch, Float32Array>> = {};
+
+  /** Aligner trim line of an arch at a stage (patient coordinates), or [] if not segmented. */
+  trimLineAt(arch: Arch, stage: number): Vector3[] {
+    const m = this.models[arch];
+    if (!m || !m.labels.some((l) => l > 0)) return [];
+    if (!this.trimDist[arch]) this.trimDist[arch] = gumDistanceToTeeth(m);
+    return trimLine(m, this.trimDist[arch]!, this.positionsAt(arch, stage), getState().modelBuilder.trimOffsetMm);
+  }
+
+  updateTrimLines() {
+    const { modelBuilder, step, stage, settings } = getState();
+    if (!this.viewer) return;
+    if (!modelBuilder.trimLines || step !== 'export') return this.viewer.setTrimLines([]);
+    const lines = ARCHES.filter((a) => (a === 'upper' ? settings.showUpper : settings.showLower)).map((a) => this.trimLineAt(a, stage)).filter((l) => l.length > 1);
+    this.viewer.setTrimLines(lines);
+  }
+
   rebuildBases() {
     this.bases = {};
-    const report: Partial<Record<Arch, { openEdges: number; holesFilled: number; borderVertices: number }>> = {};
+    const report: Partial<Record<Arch, { openEdges: number; holesFilled: number; borderVertices: number; labelPlaced?: boolean }>> = {};
     for (const arch of ARCHES) {
       const m = this.models[arch];
       if (!m) continue;
@@ -891,7 +988,7 @@ export class Studio {
       const all = new Uint32Array(m.index.length + base.index.length);
       all.set(m.index);
       all.set(base.index, m.index.length);
-      report[arch] = { openEdges: openEdgeCount(all, N + base.positions.length / 3), holesFilled: base.holesFilled, borderVertices: base.borderLength };
+      report[arch] = { openEdges: openEdgeCount(all, N + base.positions.length / 3), holesFilled: base.holesFilled, borderVertices: base.borderLength, labelPlaced: base.labelPlaced };
       // compact preview geometry of just the base triangles
       const remap = new Map<number, number>();
       const pos: number[] = [];
@@ -1143,6 +1240,86 @@ export class Studio {
     setState({ tool: 'orientPoints', orientPoints: 0 });
   }
 
+  // ───────────────────────────── model preparation ─────────────────────────────
+  /**
+   * Replace an arch's mesh (patient coordinates) after repair/trim. The saved scan is stored back in
+   * scanner coordinates so reopening the project re-applies the orientation correctly.
+   * Segmentation of that arch is reset (topology changed).
+   */
+  private replaceArchMesh(arch: Arch, mesh: RawMesh) {
+    const old = this.raw[arch];
+    const geometry = toGeometry(mesh);
+    const toScanner = this.orientation.clone().invert();
+    const scannerPos = new Float32Array(mesh.position.length);
+    const v = new Vector3();
+    for (let i = 0; i < mesh.position.length / 3; i++) {
+      v.fromArray(mesh.position, 3 * i).applyMatrix4(toScanner);
+      scannerPos.set([v.x, v.y, v.z], 3 * i);
+    }
+    const stl = writeBinaryStl([{ positions: scannerPos, index: mesh.index }]);
+    const baseName = (old?.fileName ?? `${arch}.stl`).replace(/(-prepared)?\.[^.]+$/, '');
+    this.raw[arch] = { buffer: stl.buffer as ArrayBuffer, fileName: `${baseName}-prepared.stl` };
+    const model = new ArchModel(arch, geometry);
+    model.gingivaRadiusMm = getState().settings.gingivaFlexMm;
+    model.geometry.setAttribute('color', new BufferAttribute(new Float32Array(model.vertexCount * 3), 3));
+    this.models[arch] = model;
+    this.viewer?.setArchGeometry(arch, model.geometry, null);
+    setState((s) => ({ arches: { ...s.arches, [arch]: { fileName: this.raw[arch]!.fileName, vertices: model.vertexCount, faces: model.faceCount } } }));
+    this.undoStack = this.undoStack.filter((u) => u.kind !== 'seg' || u.arch !== arch);
+    this.afterSegmentation(true);
+    this.rebuildBases();
+    this.applyStage();
+  }
+
+  /** Remove floating debris and fill small scan holes on every arch. */
+  repairScans(): { removed: number; filled: number } {
+    let removed = 0, filled = 0;
+    for (const arch of ARCHES) {
+      const m = this.models[arch];
+      if (!m) continue;
+      const a = removeSmallComponents({ position: new Float32Array(m.base), index: m.index });
+      const b = fillSmallHoles(a.mesh);
+      removed += a.removed;
+      filled += b.filled;
+      if (a.removed || b.filled) this.replaceArchMesh(arch, b.mesh);
+    }
+    return { removed, filled };
+  }
+
+  /** Crown-top level of an arch in patient coordinates (lower: highest z, upper: lowest z). */
+  archTipLevel(arch: Arch): number | null {
+    const m = this.models[arch];
+    if (!m) return null;
+    let lvl = arch === 'lower' ? -Infinity : Infinity;
+    for (let i = 0; i < m.vertexCount; i++) {
+      const z = m.base[3 * i + 2];
+      lvl = arch === 'lower' ? Math.max(lvl, z) : Math.min(lvl, z);
+    }
+    return lvl;
+  }
+
+  /** Plane height that keeps `keepMm` of model measured from the crown tops. */
+  trimLevel(arch: Arch, keepMm: number): number | null {
+    const tip = this.archTipLevel(arch);
+    return tip === null ? null : arch === 'lower' ? tip - keepMm : tip + keepMm;
+  }
+
+  previewTrim(arch: Arch, keepMm: number | null) {
+    const z = keepMm === null ? null : this.trimLevel(arch, keepMm);
+    this.viewer?.setTrimPreview(arch, z);
+  }
+
+  /** Cut the scan with a plane parallel to the occlusal plane, `keepMm` from the crown tops. */
+  trimArch(arch: Arch, keepMm: number) {
+    const m = this.models[arch];
+    const z = this.trimLevel(arch, keepMm);
+    if (!m || z === null) return;
+    const normal = new Vector3(0, 0, arch === 'lower' ? 1 : -1);
+    const mesh = trimByPlane({ position: new Float32Array(m.base), index: m.index }, new Vector3(0, 0, z), normal);
+    this.viewer?.setTrimPreview(arch, null);
+    this.replaceArchMesh(arch, mesh);
+  }
+
   // ───────────────────────────── auto segmentation & axes ─────────────────────────────
   toggleMissing(id: number) {
     const { missingTeeth } = getState();
@@ -1218,6 +1395,112 @@ export class Studio {
     const raw = h.kind === 'translate' ? delta : (delta * 180) / Math.PI;
     const value = this.gizmoStart.value + Math.round(raw / inc) * inc;
     if (Math.abs(value - tp.movement[h.key]) > 1e-9) this.setMovement(selectedTooth, { [h.key]: value }, false);
+  }
+
+  /** Overjet / overbite / midline at a stage (needs both arches, oriented, centrals segmented). */
+  occlusionAt(stage: number): OcclusionMetrics | null {
+    const u = this.models.upper, l = this.models.lower;
+    if (!u || !l || !getState().oriented) return null;
+    return occlusionMetrics(u, this.positionsAt('upper', stage), l, this.positionsAt('lower', stage));
+  }
+
+  // ───────────────────────────── pontics ─────────────────────────────
+  private ponticMeshes = new Map<number, Mesh>();
+  private ponticMaterial = new MeshStandardMaterial({ color: 0xf2ead6, roughness: 0.5 });
+
+  /** Midsagittal x of an arch (between the central incisors, else 0 in patient coordinates). */
+  private midlineX(arch: Arch): number {
+    const { frames } = getState();
+    const pair = arch === 'upper' ? [11, 21] : [41, 31];
+    if (frames[pair[0]] && frames[pair[1]]) return (frames[pair[0]].centroid[0] + frames[pair[1]].centroid[0]) / 2;
+    return 0;
+  }
+
+  /** Mirrored crown of the source tooth, in initial (stage 0) coordinates plus the pontic offset. */
+  ponticGeometry(p: { id: number; source: number; offset: [number, number, number] }): BufferGeometry | null {
+    const body = this.body(p.source);
+    if (!body) return null;
+    const g = body.geometry.clone();
+    const mx = this.midlineX(archOf(p.id));
+    const pos = g.getAttribute('position');
+    for (let i = 0; i < pos.count; i++) pos.setX(i, 2 * mx - pos.getX(i) + p.offset[0]), pos.setY(i, pos.getY(i) + p.offset[1]), pos.setZ(i, pos.getZ(i) + p.offset[2]);
+    const idx = g.index!;
+    for (let f = 0; f < idx.count; f += 3) {
+      const b = idx.getX(f + 1);
+      idx.setX(f + 1, idx.getX(f + 2));
+      idx.setX(f + 2, b);
+    }
+    g.computeVertexNormals();
+    return g;
+  }
+
+  /** Translation of a pontic at a stage: average displacement of its present neighbours. */
+  ponticShift(id: number, stage: number): Vector3 {
+    const { frames, plan } = getState();
+    const arch = archOf(id);
+    const present = (this.models[arch]?.teeth() ?? []).filter((t) => !plan.teeth[t]?.extracted);
+    const seq = sequence(arch);
+    const i = seq.indexOf(id);
+    const neighbours: number[] = [];
+    for (let k = i - 1; k >= 0; k--) if (present.includes(seq[k])) { neighbours.push(seq[k]); break; }
+    for (let k = i + 1; k < seq.length; k++) if (present.includes(seq[k])) { neighbours.push(seq[k]); break; }
+    const T = this.transformsAt(stage, arch);
+    const shift = new Vector3();
+    for (const n of neighbours) {
+      const c = v3(frames[n].centroid);
+      shift.add(c.clone().applyMatrix4(T.get(n) ?? new Matrix4()).sub(c));
+    }
+    return neighbours.length ? shift.multiplyScalar(1 / neighbours.length) : shift;
+  }
+
+  rebuildPontics() {
+    for (const m of this.ponticMeshes.values()) {
+      this.viewer?.scene.remove(m);
+      m.geometry.dispose();
+    }
+    this.ponticMeshes.clear();
+    for (const p of getState().plan.pontics ?? []) {
+      const g = this.ponticGeometry(p);
+      if (!g) continue;
+      const mesh = new Mesh(g, this.ponticMaterial);
+      mesh.userData = { id: p.id, stageFrom: p.stageFrom };
+      this.ponticMeshes.set(p.id, mesh);
+      this.viewer?.scene.add(mesh);
+    }
+    this.updatePontics();
+  }
+
+  private updatePontics(stageOverride?: number) {
+    const { settings } = getState();
+    const stage = stageOverride ?? getState().stage;
+    for (const mesh of this.ponticMeshes.values()) {
+      const id = mesh.userData.id as number;
+      mesh.position.copy(this.ponticShift(id, stage));
+      mesh.visible = stage >= (mesh.userData.stageFrom as number) && (archOf(id) === 'upper' ? settings.showUpper : settings.showLower);
+    }
+    this.viewer?.requestRender();
+  }
+
+  addPontic(id: number) {
+    const { plan } = getState();
+    const source = contralateral(id);
+    if (!this.models[archOf(id)]?.teeth().includes(source)) {
+      toast(`Pontic ${id} needs the contralateral tooth ${source} to be segmented.`, 'error');
+      return;
+    }
+    const pontics = (plan.pontics ?? []).filter((p) => p.id !== id);
+    pontics.push({ id, source, offset: [0, 0, 0], stageFrom: 0 });
+    this.setPlan({ ...plan, pontics });
+  }
+
+  updatePontic(id: number, patch: Partial<{ offset: [number, number, number]; stageFrom: number }>) {
+    const { plan } = getState();
+    this.setPlan({ ...plan, pontics: (plan.pontics ?? []).map((p) => (p.id === id ? { ...p, ...patch } : p)) });
+  }
+
+  removePontic(id: number) {
+    const { plan } = getState();
+    this.setPlan({ ...plan, pontics: (plan.pontics ?? []).filter((p) => p.id !== id) });
   }
 
   // ───────────────────────────── roots ─────────────────────────────

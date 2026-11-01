@@ -110,6 +110,11 @@ export interface ToothPlan {
   movement: Movement;
   /** First stage (aligner) at which this tooth begins moving. 0 = from the first aligner. */
   startStage: number;
+  /**
+   * Staging layer (1 = default). Layers move in sequence: layer 2 starts when layer 1 has finished,
+   * etc. — e.g. sequential distalization 7s → 6s → 5s …
+   */
+  layer?: number;
   /** Clinician-measured mesio-distal width, overrides the automatic value. */
   manualWidthMm?: number;
   attachments: Attachment[];
@@ -134,10 +139,23 @@ export interface IprEntry {
   stage: number;
 }
 
+/** Virtual pontic filling the space of a missing tooth (mirror of the contralateral crown). */
+export interface Pontic {
+  /** FDI number of the missing tooth. */
+  id: number;
+  /** Segmented tooth whose crown is mirrored (normally the contralateral). */
+  source: number;
+  /** Fine placement in patient coordinates (mm): x right, y anterior, z up. */
+  offset: Vec3;
+  /** First stage on which the pontic appears on the models. */
+  stageFrom: number;
+}
+
 export interface TreatmentPlan {
   teeth: Record<number, ToothPlan>;
   ipr: IprEntry[];
   notes: string;
+  pontics?: Pontic[];
 }
 
 export interface CaseInfo {

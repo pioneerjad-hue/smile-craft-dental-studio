@@ -18,7 +18,7 @@ import { toast } from '../engine/store';
 
 const STEPS: [Step, string][] = [
   ['import', 'Case & scans'],
-  ['orient', 'Orient'],
+  ['orient', 'Prepare'],
   ['segment', 'Segment'],
   ['axes', 'Axes'],
   ['plan', 'Plan'],

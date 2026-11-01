@@ -1,4 +1,4 @@
-import { contralateral, shortLabel, sortTeeth, toothName } from '../../core/fdi';
+import { LOWER_SEQUENCE, UPPER_SEQUENCE, contralateral, shortLabel, sortTeeth, toothName } from '../../core/fdi';
 import { limitsFor } from '../../core/staging';
 import { crownDisplacement, movementMatrix, v3 } from '../../core/transform';
 import { ATTACHMENT_LABEL, MOVEMENT_KEYS, MOVEMENT_META, isZeroMovement } from '../../core/types';
@@ -101,6 +101,7 @@ export function PlanPanel() {
         <h3>Protocol check</h3>
         <IssuesList issues={issues} limit={6} onPickTooth={(id) => setState({ selectedTooth: id })} />
       </div>
+      <PonticSection />
       <div className="section">
         <h3>Plan notes</h3>
         <textarea rows={3} value={plan.notes} onChange={(e) => studio.setPlan({ ...plan, notes: e.target.value }, false)} placeholder="Treatment goals, refinement plans, auxiliaries…" />
@@ -244,6 +245,10 @@ export function ToothInspector() {
           <label>Start at stage</label>
           <NumberInput value={tp.startStage} step={1} min={0} digits={0} onChange={(v) => studio.updateTooth(id, { startStage: Math.round(v) })} />
         </div>
+        <div className="field">
+          <label title="Teeth in layer 2 start moving when layer 1 has finished, and so on">Staging layer</label>
+          <NumberInput value={tp.layer ?? 1} step={1} min={1} max={12} digits={0} onChange={(v) => studio.updateTooth(id, { layer: Math.max(1, Math.round(v)) })} />
+        </div>
         <div className="row">
           <label className="checkbox">
             <input type="checkbox" checked={!!tp.locked} onChange={(e) => studio.updateTooth(id, e.target.checked ? { locked: true, movement: { mesial: 0, buccal: 0, extrusion: 0, tip: 0, torque: 0, rotation: 0 } } : { locked: false })} /> Fixed / anchor tooth (implant, bridge)
@@ -330,5 +335,62 @@ export function ToothInspector() {
         <textarea rows={2} value={tp.note ?? ''} onChange={(e) => studio.updateTooth(id, { note: e.target.value }, false)} />
       </div>
     </>
+  );
+}
+
+function PonticSection() {
+  const teeth = useStudio((s) => s.teeth);
+  const pontics = useStudio((s) => s.plan.pontics ?? []);
+  const arches = useStudio((s) => s.arches);
+  const absent = [...(arches.upper ? UPPER_SEQUENCE : []), ...(arches.lower ? LOWER_SEQUENCE : [])].filter(
+    (id) => id % 10 <= 7 && !teeth.includes(id) && !pontics.some((p) => p.id === id),
+  );
+  return (
+    <div className="section">
+      <h3>Pontics (missing teeth)</h3>
+      <div className="hint small">Fills a space with the mirrored crown of the opposite-side tooth. It follows its neighbours through the stages and is printed on the models. Extractions: tick "Planned extraction" in the tooth inspector.</div>
+      <select
+        value=""
+        onChange={(e) => {
+          if (e.target.value) studio.addPontic(+e.target.value);
+        }}
+      >
+        <option value="">+ Add pontic for…</option>
+        {absent.map((id) => (
+          <option key={id} value={id}>
+            {id} · {toothName(id)}
+          </option>
+        ))}
+      </select>
+      {pontics.map((p) => (
+        <div className="card" key={p.id}>
+          <div className="row between">
+            <b>
+              {p.id} <span className="muted small">mirror of {p.source}</span>
+            </b>
+            <button className="icon danger" onClick={() => studio.removePontic(p.id)}>
+              ✕
+            </button>
+          </div>
+          <div className="row small" style={{ marginTop: 6 }}>
+            {(['R/L', 'Ant', 'Up'] as const).map((label, k) => (
+              <span key={label} className="row" style={{ gap: 3 }}>
+                <span className="muted">{label}</span>
+                <NumberInput
+                  width={50}
+                  value={p.offset[k]}
+                  step={0.1}
+                  onChange={(v) => {
+                    const o = [...p.offset] as [number, number, number];
+                    o[k] = v;
+                    studio.updatePontic(p.id, { offset: o });
+                  }}
+                />
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }

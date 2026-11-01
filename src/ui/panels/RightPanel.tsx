@@ -2,6 +2,7 @@ import type { Arch } from '../../core/fdi';
 import { bolton, spaceAnalysis, toothWidth } from '../../core/analysis';
 import { sortTeeth } from '../../core/fdi';
 import { setState, useStudio } from '../../engine/store';
+import { studio } from '../../engine/studio';
 import { useSettings } from '../common';
 
 export function RightPanel() {
@@ -58,6 +59,7 @@ export function RightPanel() {
               </div>
             );
           })}
+          <OcclusionCard />
           <details>
             <summary>Tooth widths (mm)</summary>
             <table className="grid">
@@ -106,5 +108,35 @@ export function RightPanel() {
         )}
       </div>
     </>
+  );
+}
+
+function OcclusionCard() {
+  // recompute when the plan / staging / segmentation changes
+  useStudio((s) => s.staging);
+  useStudio((s) => s.frames);
+  const total = useStudio((s) => s.staging?.totalStages ?? 0);
+  const a = studio.occlusionAt(0);
+  const b = total ? studio.occlusionAt(total) : null;
+  if (!a) return null;
+  const row = (label: string, k: 'overjetMm' | 'overbiteMm' | 'midlineMm', hint: string) => (
+    <div className="row between small" title={hint}>
+      <span>{label}</span>
+      <span className="mono">
+        {a[k].toFixed(1)}
+        {b && <> → <b>{b[k].toFixed(1)}</b></>} mm
+      </span>
+    </div>
+  );
+  return (
+    <div className="card">
+      <div className="row between">
+        <span>Occlusion</span>
+        <span className="small muted">initial{b ? ' → final' : ''}</span>
+      </div>
+      {row('Overjet', 'overjetMm', 'Upper incisal edge to lower incisor labial surface, parallel to the occlusal plane')}
+      {row('Overbite', 'overbiteMm', 'Vertical incisor overlap: negative = open bite')}
+      {row('Midline (upper − lower)', 'midlineMm', 'Positive = upper midline to the patient\'s right of the lower')}
+    </div>
   );
 }

@@ -3,6 +3,8 @@ import { iprLimit, suggestIpr } from '../../core/validate';
 import { setState, toast, useStudio } from '../../engine/store';
 import { studio } from '../../engine/studio';
 import { goToStep } from '../App';
+import { stagingTableCsv } from '../../engine/exporter';
+import { download, safeName } from '../../engine/project';
 import { Check, IssuesList, NumberInput } from '../common';
 
 export function StagePanel() {
@@ -14,6 +16,7 @@ export function StagePanel() {
   const stage = useStudio((s) => s.stage);
   const issues = useStudio((s) => s.issues);
   const busy = useStudio((s) => s.busy);
+  const caseId = useStudio((s) => s.caseInfo.caseId);
   const total = staging?.totalStages ?? 0;
   const ids = sortTeeth(Object.keys(staging?.teeth ?? {}).map(Number)).filter((id) => (staging!.teeth[id].stagesNeeded ?? 0) > 0);
   const setStaging = (patch: Partial<typeof protocol.staging>) => studio.setProtocol({ ...protocol, staging: { ...protocol.staging, ...patch } });
@@ -60,6 +63,20 @@ export function StagePanel() {
       </div>
 
       <div className="section">
+        <h3>Layers (sequential movement)</h3>
+        <div className="hint small">Teeth in layer 2 start when layer 1 has finished, and so on. Set a tooth's layer in the Plan inspector, or use a preset.</div>
+        {(['upper', 'lower'] as const).map((arch) => (
+          <div className="row wrap small" key={arch}>
+            <span style={{ width: 44, textTransform: 'capitalize' }}>{arch}</span>
+            <button onClick={() => studio.applyLayerPreset('distalization', arch)}>Sequential distalization</button>
+            <button onClick={() => studio.applyLayerPreset('mesialization', arch)}>Anterior first</button>
+            <button onClick={() => studio.applyLayerPreset('reset', arch)}>All together</button>
+          </div>
+        ))}
+        <button onClick={() => download(stagingTableCsv(), `${safeName(caseId || 'case')}_staging-table.csv`, 'text/csv')}>Download staging table (CSV)</button>
+      </div>
+
+      <div className="section">
         <h3>Tooth timeline</h3>
         {ids.length === 0 && <div className="muted small">No movements planned yet.</div>}
         <div className="gantt">
@@ -67,7 +84,10 @@ export function StagePanel() {
             const t = staging!.teeth[id];
             return (
               <div className="g-row" key={id} onClick={() => setState({ selectedTooth: id })} style={{ cursor: 'pointer' }} title={`${id}: stages ${t.start}–${t.end}, limited by ${t.limitingFactor}`}>
-                <span>{id}</span>
+                <span>
+                  {id}
+                  {(plan.teeth[id]?.layer ?? 1) > 1 && <sup className="muted"> L{plan.teeth[id]?.layer}</sup>}
+                </span>
                 <div className="bar">
                   <i style={{ left: `${(t.start / Math.max(1, total)) * 100}%`, width: `${((t.end - t.start) / Math.max(1, total)) * 100}%` }} />
                   {plan.ipr

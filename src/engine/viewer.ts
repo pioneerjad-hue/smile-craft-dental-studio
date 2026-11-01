@@ -1,4 +1,5 @@
 import {
+  PlaneGeometry,
   ConeGeometry,
   CylinderGeometry,
   GridHelper,
@@ -665,6 +666,37 @@ export class Viewer {
     (grid.material as LineBasicMaterial).opacity = 0.6;
     const line = (a: Vector3, b: Vector3, color: number) => new Line(new BufferGeometry().setFromPoints([a, b]), new LineBasicMaterial({ color, depthTest: false }));
     this.guides.add(grid, line(new Vector3(0, -60, 0), new Vector3(0, 60, 0), 0xef4444), line(new Vector3(-60, 0, 0), new Vector3(60, 0, 0), 0x22c55e));
+  }
+
+  private trimPreviews: Partial<Record<Arch, Mesh>> = {};
+  private trimLineGroup = new Group();
+
+  /** Aligner trim lines (yellow), drawn on top. */
+  setTrimLines(lines: Vector3[][]) {
+    if (!this.trimLineGroup.parent) this.scene.add(this.trimLineGroup);
+    this.trimLineGroup.clear();
+    const mat = new LineBasicMaterial({ color: 0xfacc15, depthTest: false });
+    for (const pts of lines) {
+      const l = new Line(new BufferGeometry().setFromPoints(pts), mat);
+      l.renderOrder = 40;
+      this.trimLineGroup.add(l);
+    }
+    this.requestRender();
+  }
+
+  /** Translucent cutting plane at height z (patient coordinates), or null to hide. */
+  setTrimPreview(arch: Arch, z: number | null) {
+    const old = this.trimPreviews[arch];
+    if (old) this.scene.remove(old);
+    delete this.trimPreviews[arch];
+    if (z !== null) {
+      const plane = new Mesh(new PlaneGeometry(130, 130), new MeshBasicMaterial({ color: arch === 'upper' ? 0xf97316 : 0xef4444, transparent: true, opacity: 0.28, side: DoubleSide, depthWrite: false }));
+      plane.position.set(0, 0, z);
+      plane.renderOrder = 6;
+      this.scene.add(plane);
+      this.trimPreviews[arch] = plane;
+    }
+    this.requestRender();
   }
 
   setGuides(visible: boolean) {

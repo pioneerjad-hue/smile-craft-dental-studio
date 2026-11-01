@@ -200,3 +200,23 @@ describe('constraints', () => {
     expect(res.problems.length).toBe(1);
   });
 });
+
+describe('staging layers', () => {
+  it('moves layers in sequence (sequential distalization)', () => {
+    const protocol = defaultProtocol();
+    const f = (id: number): ToothFrame => ({ ...frame, id });
+    const s = computeStaging(protocol, [
+      { plan: { ...toothPlan(17, { mesial: -1 }), layer: 1 }, frame: f(17), samples: [] },
+      { plan: { ...toothPlan(16, { mesial: -1 }), layer: 2 }, frame: f(16), samples: [] },
+      { plan: { ...toothPlan(15, { mesial: -1 }), layer: 3 }, frame: f(15), samples: [] },
+      { plan: toothPlan(11, { buccal: 0.5 }), frame: f(11), samples: [] },
+    ]);
+    // molar translation limit 0.2 mm → 5 stages each; premolar 0.25 → 4
+    expect([s.teeth[17].start, s.teeth[17].end]).toEqual([0, 5]);
+    expect([s.teeth[16].start, s.teeth[16].end]).toEqual([5, 10]);
+    expect([s.teeth[15].start, s.teeth[15].end]).toEqual([10, 14]);
+    expect(s.totalStages).toBe(14);
+    // layer-1 incisor (synchronized) finishes with layer 1
+    expect(s.teeth[11].end).toBe(5);
+  });
+});

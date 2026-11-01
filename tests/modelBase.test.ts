@@ -36,3 +36,29 @@ describe('model builder', () => {
     });
   }
 });
+
+describe('engraved stage label', () => {
+  for (const arch of ['upper', 'lower'] as const) {
+    it(`engraves "SC-0142 ${arch === 'upper' ? 'U' : 'L'}07" into the ${arch} base and stays watertight`, () => {
+      const model = new ArchModel(arch, makeDemoArch(arch).geometry);
+      const O = new Vector3(0, 0, arch === 'lower' ? 1 : -1);
+      const base = buildModelBase(model, O, { thicknessMm: 3, label: `SC-0142 ${arch === 'upper' ? 'U' : 'L'}07` })!;
+      expect(base.labelPlaced).toBe(true);
+      const total = model.vertexCount + base.positions.length / 3;
+      const index = new Uint32Array(model.index.length + base.index.length);
+      index.set(model.index);
+      index.set(base.index, model.index.length);
+      expect(openEdgeCount(index, total)).toBe(0);
+      const seen = new Set<number>();
+      let duplicates = 0;
+      for (let f = 0; f < index.length; f += 3) {
+        for (let k = 0; k < 3; k++) {
+          const key = index[f + k] * total + index[f + ((k + 1) % 3)];
+          if (seen.has(key)) duplicates++;
+          seen.add(key);
+        }
+      }
+      expect(duplicates).toBe(0);
+    }, 30000);
+  }
+});
