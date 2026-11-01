@@ -340,7 +340,8 @@ export function ToothInspector() {
 
 function PonticSection() {
   const teeth = useStudio((s) => s.teeth);
-  const pontics = useStudio((s) => s.plan.pontics ?? []);
+  const ponticsRaw = useStudio((s) => s.plan.pontics);
+  const pontics = ponticsRaw ?? [];
   const arches = useStudio((s) => s.arches);
   const absent = [...(arches.upper ? UPPER_SEQUENCE : []), ...(arches.lower ? LOWER_SEQUENCE : [])].filter(
     (id) => id % 10 <= 7 && !teeth.includes(id) && !pontics.some((p) => p.id === id),

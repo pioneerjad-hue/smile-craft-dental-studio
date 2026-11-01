@@ -11,7 +11,8 @@ Everything runs locally in the browser — scans never leave the computer.
 | Step | What you do | What the studio does |
 | --- | --- | --- |
 | **1 · Case & scans** | Enter patient/case ID, drop upper & lower STL/PLY/OBJ (from iTero, TRIOS, Medit, Primescan…) | Merges the mesh, keeps the bite (both arches in scan coordinates) |
-| **Orient** | *Auto-orient*, or click 3 landmarks (incisal point, right and left first-molar MB cusps), then fine-tune ±1°/±5° | Both arches move together (bite kept) into patient coordinates: +X right, +Y anterior, +Z up, occlusal plane on the grid |
+| **Prepare** | *Auto-repair* (removes scan debris, fills small holes), trim each arch with a plane parallel to the occlusal plane (preview, then apply) | Exact plane cut; scans are stored back in scanner coordinates so projects reopen correctly |
+| **Orient** (in Prepare) | *Auto-orient*, or click 3 landmarks (incisal point, right and left first-molar MB cusps), then fine-tune ±1°/±5° | Both arches move together (bite kept) into patient coordinates: +X right, +Y anterior, +Z up, occlusal plane on the grid |
 | **2 · Segment** | Mark missing teeth, *Auto-segment*, check the numbers on the crowns; click a crown to fix its number, brush to fix edges | Auto-seeding along the fitted arch curve (valleys between crowns matched to expected widths), then competitive watershed: teeth and gum meet at the gingival margin and contacts |
 | **Axes** | Check each tooth's axes; correct tip / torque / rotation of the axis; adjust root length | Long axis from crown cross-sections (35–90 % height), mesial along the arch, buccal outward. Template roots (1–3 roots by tooth type) from protocol root lengths; centre of resistance at 40 % of root length |
 | **3 · Plan** | Select a tooth, type or step its movement | Live 3D preview, per-movement stage cost, crown displacement, protocol warnings |
@@ -31,6 +32,18 @@ any scan holes), so each stage exports as one closed, consistently wound solid. 
 
 **Simulation video**: H.264 MP4 (Full HD, HD, square or vertical), one animated segment per chosen view with
 case name, view and aligner counter. Needs a current Chrome, Edge or Safari (WebCodecs).
+
+**Staging layers**: teeth in layer 2 start when layer 1 has finished (presets: sequential distalization,
+anterior first, all together). The full staging table (every tooth, every stage) exports as CSV.
+
+**Extractions and pontics**: a planned extraction becomes a flat gum patch from aligner 1; a pontic fills
+a missing tooth with the mirrored contralateral crown and follows its neighbours.
+
+**Production extras**: the case and stage are engraved into each model's base (e.g. `SC-0142 U07`,
+watertight), and scalloped aligner trim lines are generated for every stage at a chosen offset from the
+teeth and exported as `.pts` point files for CNC/laser trimmers.
+
+**Occlusion**: overjet, overbite and midline (initial → final) in the analysis panel and report.
 
 **3D navigator** (Plan step): drag the arrows to translate the selected tooth (red mesio-distal, green
 bucco-lingual, blue extrusion-intrusion) and the rings to rotate it (cyan rotation, orange tip, violet torque),
