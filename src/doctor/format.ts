@@ -1,0 +1,35 @@
+/**
+ * Doctor-viewer package format (shared by the studio exporter and the standalone viewer).
+ * A zip (fflate) with `meta.json` and binary arrays; embedded in the HTML as base64.
+ */
+export const DOCTOR_FORMAT = 'smile-craft/doctor-viewer@1';
+
+export interface DoctorArchMeta {
+  /** Tooth ids in the order used by `<arch>.stages` matrices. */
+  teeth: number[];
+  /** Position quantization: value = int16 * scale + offset (per axis). */
+  scale: [number, number, number];
+  offset: [number, number, number];
+  vertexCount: number;
+  /** Extracted teeth: plane (point, normal) the crown collapses onto from `fromStage`. */
+  extracted: { id: number; point: [number, number, number]; normal: [number, number, number]; fromStage: number }[];
+  attachments: { file: string; tooth: number; stageFrom: number }[];
+  pontics: { file: string; id: number; stageFrom: number }[];
+}
+
+export interface DoctorMeta {
+  format: typeof DOCTOR_FORMAT;
+  createdAt: string;
+  lab: { name: string; email: string; whatsapp: string };
+  caseInfo: { patientName: string; caseId: string; clinician: string; notes: string };
+  totalStages: number;
+  archStages: { upper: number; lower: number };
+  daysPerStage: number;
+  colors: { gum: string; tooth: string };
+  oriented: boolean;
+  arches: Partial<Record<'upper' | 'lower', DoctorArchMeta>>;
+  teeth: { id: number; movement: Record<string, number>; start: number; end: number; attachments: string[]; extracted: boolean }[];
+  ipr: { contact: string; amountMm: number; stage: number }[];
+  occlusion: { initial: Record<string, number> | null; final: Record<string, number> | null };
+  planNotes: string;
+}

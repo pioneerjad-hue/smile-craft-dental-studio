@@ -203,3 +203,33 @@ ${s.plan.notes ? `<h2>Notes</h2><p>${esc(s.plan.notes)}</p>` : ''}
   w.document.write(html);
   w.document.close();
 }
+
+/** Base64 of a large byte array (chunked to stay within call-stack limits). */
+function toBase64(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/**
+ * Single-file doctor viewer: the case package (models, stages, IPR, attachments…) plus the viewer
+ * runtime in one HTML file that opens in any browser, offline, including on phones.
+ */
+export async function exportDoctorViewer() {
+  const s = getState();
+  setState({ busy: 'Building doctor viewer…' });
+  await new Promise((r) => setTimeout(r, 0));
+  try {
+    const { buildDoctorPackage } = await import('../doctor/payload');
+    const runtime = (await import('../../dist-doctor/runtime.js?raw')).default as string;
+    const pkg = buildDoctorPackage(s.lab);
+    const title = `${s.lab.name ? s.lab.name + ' — ' : ''}Treatment plan ${s.caseInfo.caseId || s.caseInfo.patientName}`;
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title></head><body><div>Loading treatment plan…</div><script>window.__SMILE_CASE__="${toBase64(pkg)}";</script><script>${runtime.replace(/<\/script/gi, '<\\/script')}</script></body></html>`;
+    download(html, `${safeName(s.caseInfo.caseId || s.caseInfo.patientName)}_doctor-viewer.html`, 'text/html');
+    toast(`Doctor viewer exported (${(html.length / 1048576).toFixed(1)} MB). Send it by email or WhatsApp.`, 'success');
+  } catch (e) {
+    toast(`Doctor viewer failed: ${(e as Error).message}`, 'error');
+  } finally {
+    setState({ busy: null });
+  }
+}

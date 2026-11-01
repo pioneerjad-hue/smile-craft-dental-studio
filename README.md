@@ -51,6 +51,12 @@ and shows, tooth by tooth, how far the plan's final crowns are from it (mm and d
 for learning from a lab's setups and for measuring AI-proposed plans. Files must share the coordinate
 system of the initial scans (true for exports of the same case).
 
+**Doctor viewer** (Export → *Doctor viewer*): one HTML file for the treating doctor — every aligner
+stage in 3D (play, front/side/occlusal views, initial overlay), IPR, attachments, movement table and
+occlusion, with **Approve** / **Request changes** buttons that prepare the reply to the lab by email or
+WhatsApp. Opens offline in any browser, including phones (≈ 2–10 MB per case). The lab name, email and
+WhatsApp number are remembered on the computer.
+
 **Occlusion**: overjet, overbite and midline (initial → final) in the analysis panel and report.
 
 **3D navigator** (Plan step): drag the arrows to translate the selected tooth (red mesio-distal, green

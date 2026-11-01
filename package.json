@@ -5,12 +5,13 @@
   "type": "module",
   "description": "Clear-aligner treatment planning studio: scan import, tooth segmentation, 6-DOF movement planning, protocol-driven staging, IPR/attachments, and print-ready stage STL export.",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "dev": "npm run build:doctor && vite",
+    "build": "npm run build:doctor && tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "build:offline": "tsc --noEmit && vite build --config vite.offline.config.ts && node scripts/name-offline.mjs"
+    "build:offline": "npm run build:doctor && tsc --noEmit && vite build --config vite.offline.config.ts && node scripts/name-offline.mjs",
+    "build:doctor": "vite build --config vite.doctor.config.ts"
   },
   "dependencies": {
     "fflate": "^0.8.2",

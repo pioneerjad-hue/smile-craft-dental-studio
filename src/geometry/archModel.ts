@@ -542,6 +542,12 @@ export class ArchModel {
     this.gingiva = { vtx, tooth, w };
   }
 
+  /** Gingiva blending weights (computed on demand): used by the doctor viewer to replay stages. */
+  gumWeights(): { vtx: Uint32Array; tooth: Uint8Array; w: Float32Array } {
+    this.ensureGingivaWeights();
+    return this.gingiva!;
+  }
+
   /** Compute deformed vertex positions for a set of rigid tooth transforms. */
   deformedPositions(transforms: Map<number, Matrix4>, out?: Float32Array, flatten?: Map<number, { point: Vector3; normal: Vector3 }>): Float32Array {
     const pos = out ?? new Float32Array(this.base.length);

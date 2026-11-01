@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { Arch } from '../../core/fdi';
-import { exportStages, openReport, planSummary, stageStl } from '../../engine/exporter';
+import { exportDoctorViewer, exportStages, openReport, planSummary, stageStl } from '../../engine/exporter';
 import { download, safeName } from '../../engine/project';
-import { setState, useStudio } from '../../engine/store';
+import { saveLab, setState, useStudio } from '../../engine/store';
 import type { View } from '../../engine/store';
 import { VIEW_LABEL, exportVideo, videoSupported } from '../../engine/video';
 import { Check, IssuesList, NumberInput } from '../common';
@@ -74,6 +74,7 @@ export function ExportPanel() {
           ))}
         </div>
       </div>
+      <DoctorViewerSection />
       <VideoSection />
       <div className="section">
         <h3>Documents</h3>
@@ -202,6 +203,41 @@ function VideoSection() {
         Export video · ≈ {Math.round(seconds)} s
       </button>
       <div className="hint small">H.264 MP4 — plays in QuickTime, PowerPoint, WhatsApp and on phones. Layer colours and opacity are used as shown.</div>
+    </div>
+  );
+}
+
+function DoctorViewerSection() {
+  const lab = useStudio((s) => s.lab);
+  const busy = useStudio((s) => s.busy);
+  const set = (patch: Partial<typeof lab>) => {
+    const next = { ...lab, ...patch };
+    setState({ lab: next });
+    saveLab(next);
+  };
+  return (
+    <div className="section">
+      <h3>Doctor viewer</h3>
+      <div className="hint small">
+        One HTML file for the treating doctor: all aligner steps in 3D (play, views, initial overlay), IPR, attachments,
+        movements and occlusion, with <b>Approve</b> / <b>Request changes</b> buttons that send the reply to your lab.
+        Opens in any browser, also on phones, without installing anything.
+      </div>
+      <div className="field">
+        <label>Lab name</label>
+        <input type="text" value={lab.name} onChange={(e) => set({ name: e.target.value })} placeholder="Smile Craft Lab" />
+      </div>
+      <div className="field">
+        <label>Reply email</label>
+        <input type="text" value={lab.email} onChange={(e) => set({ email: e.target.value })} placeholder="lab@example.com" />
+      </div>
+      <div className="field">
+        <label>WhatsApp</label>
+        <input type="text" value={lab.whatsapp} onChange={(e) => set({ whatsapp: e.target.value })} placeholder="+961 …" />
+      </div>
+      <button className="primary" disabled={!!busy} onClick={() => void exportDoctorViewer()}>
+        Export doctor viewer (.html)
+      </button>
     </div>
   );
 }

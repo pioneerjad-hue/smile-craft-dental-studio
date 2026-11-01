@@ -61,6 +61,30 @@ export interface BaseReport {
   labelPlaced?: boolean;
 }
 
+export interface LabContact {
+  name: string;
+  email: string;
+  whatsapp: string;
+}
+
+function loadLab(): LabContact {
+  try {
+    const raw = localStorage.getItem('smile-craft-lab');
+    if (raw) return { name: '', email: '', whatsapp: '', ...JSON.parse(raw) };
+  } catch {
+    /* storage unavailable */
+  }
+  return { name: '', email: '', whatsapp: '' };
+}
+
+export function saveLab(lab: LabContact) {
+  try {
+    localStorage.setItem('smile-craft-lab', JSON.stringify(lab));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
 export interface StudioState {
   step: Step;
   caseInfo: CaseInfo;
@@ -91,6 +115,8 @@ export interface StudioState {
   oriented: boolean;
   /** Landmark clicks collected by the 3-point orientation tool. */
   orientPoints: number;
+  /** Lab details printed in the doctor viewer (remembered on this computer). */
+  lab: LabContact;
 }
 
 export function emptyPlan(): TreatmentPlan {
@@ -149,6 +175,7 @@ export const useStudio = create<StudioState>(() => ({
   missingTeeth: [18, 28, 38, 48],
   oriented: false,
   orientPoints: 0,
+  lab: typeof localStorage === 'undefined' ? { name: '', email: '', whatsapp: '' } : loadLab(),
 }));
 
 export const getState = useStudio.getState;
