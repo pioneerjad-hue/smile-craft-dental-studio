@@ -43,6 +43,14 @@ a missing tooth with the mirrored contralateral crown and follows its neighbours
 watertight), and scalloped aligner trim lines are generated for every stage at a chosen offset from the
 teeth and exported as `.pts` point files for CNC/laser trimmers.
 
+**Reference setups** (Plan step → *Reference setup*): load the final-setup STL exported from other
+software (e.g. Maestro) — files or a whole export folder; upper/lower and stage numbers are read from
+the file names. Every segmented crown is fitted onto it (coarse search + trimmed ICP) and converted to
+the tooth's 6-axis movement. *Use as my plan* applies it; *Compare with my plan* keeps it as a reference
+and shows, tooth by tooth, how far the plan's final crowns are from it (mm and degrees) — the benchmark
+for learning from a lab's setups and for measuring AI-proposed plans. Files must share the coordinate
+system of the initial scans (true for exports of the same case).
+
 **Occlusion**: overjet, overbite and midline (initial → final) in the analysis panel and report.
 
 **3D navigator** (Plan step): drag the arrows to translate the selected tooth (red mesio-distal, green

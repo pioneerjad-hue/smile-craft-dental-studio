@@ -151,11 +151,20 @@ export interface Pontic {
   stageFrom: number;
 }
 
+/** Setup imported from other software (e.g. a lab's Maestro export), used as a plan or a benchmark. */
+export interface ReferenceSetup {
+  label: string;
+  importedAt: string;
+  movements: Record<number, Movement>;
+  fits: Record<number, { rmsMm: number; inliers: number }>;
+}
+
 export interface TreatmentPlan {
   teeth: Record<number, ToothPlan>;
   ipr: IprEntry[];
   notes: string;
   pontics?: Pontic[];
+  reference?: ReferenceSetup;
 }
 
 export interface CaseInfo {

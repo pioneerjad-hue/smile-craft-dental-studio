@@ -9,6 +9,7 @@ import { setState, toast, useStudio } from '../../engine/store';
 import { studio } from '../../engine/studio';
 import { goToStep } from '../App';
 import { IssuesList, NumberInput, Odontogram } from '../common';
+import { ReferencePanel } from './ReferencePanel';
 
 const SHORT: Record<MovementKey, string> = { mesial: 'M/D', buccal: 'B/L', extrusion: 'E/I', tip: 'Tip', torque: 'Trq', rotation: 'Rot' };
 
@@ -102,6 +103,7 @@ export function PlanPanel() {
         <IssuesList issues={issues} limit={6} onPickTooth={(id) => setState({ selectedTooth: id })} />
       </div>
       <PonticSection />
+      <ReferencePanel />
       <div className="section">
         <h3>Plan notes</h3>
         <textarea rows={3} value={plan.notes} onChange={(e) => studio.setPlan({ ...plan, notes: e.target.value }, false)} placeholder="Treatment goals, refinement plans, auxiliaries…" />

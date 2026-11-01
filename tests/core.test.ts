@@ -220,3 +220,36 @@ describe('staging layers', () => {
     expect(s.teeth[11].end).toBe(5);
   });
 });
+
+import { movementFromMatrix } from '../src/core/transform';
+
+describe('movement from a rigid transform', () => {
+  it('recovers the clinical movement exactly', () => {
+    for (const m of [
+      { mesial: 1.2, buccal: -0.7, extrusion: 0.4, tip: 6, torque: -9, rotation: 18 },
+      { mesial: -3, buccal: 2, extrusion: -1.5, tip: -12, torque: 14, rotation: -35 },
+    ]) {
+      const back = movementFromMatrix(frame, movementMatrix(frame, m));
+      for (const k of Object.keys(m) as (keyof typeof m)[]) expect(back[k]).toBeCloseTo(m[k], 4);
+    }
+  });
+});
+
+import { compareToReference, parseExportName } from '../src/core/reference';
+
+describe('reference setups', () => {
+  it('reads arch and stage from exported file names', () => {
+    expect(parseExportName('Case_Upper_Stage_12.stl')).toEqual({ arch: 'upper', stage: 12 });
+    expect(parseExportName('lowerjaw final.stl')).toEqual({ arch: 'lower', stage: Number.POSITIVE_INFINITY });
+    expect(parseExportName('Mandibular_Initial.ply')).toEqual({ arch: 'lower', stage: 0 });
+    expect(parseExportName('maxillary-step3.obj')).toEqual({ arch: 'upper', stage: 3 });
+  });
+  it('measures plan vs reference differences', () => {
+    const ref = { 21: { ...zeroMovement(), mesial: 1, rotation: 10 } };
+    const same = compareToReference({ 21: frame }, { 21: ref[21] }, ref);
+    expect(same.meanCrownMm).toBeCloseTo(0, 6);
+    const off = compareToReference({ 21: frame }, { 21: { ...ref[21], mesial: 1.5, rotation: 4 } }, ref);
+    expect(off.teeth[0].angleDeg).toBeCloseTo(6, 3);
+    expect(off.teeth[0].delta.mesial).toBeCloseTo(0.5, 6);
+  });
+});

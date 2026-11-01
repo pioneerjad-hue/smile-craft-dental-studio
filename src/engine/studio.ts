@@ -16,6 +16,9 @@ import { buildRootGeometry, segmentDistance } from '../geometry/roots';
 import { fillSmallHoles, removeSmallComponents, toGeometry, trimByPlane } from '../geometry/repair';
 import { gumDistanceToTeeth, trimLine } from '../geometry/trimLine';
 import { occlusionMetrics } from '../geometry/occlusion';
+import { registerSetup } from '../geometry/registerSetup';
+import { movementFromMatrix } from '../core/transform';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { OcclusionMetrics } from '../geometry/occlusion';
 import type { Mesh as RawMesh } from '../geometry/repair';
 import type { ModelBase } from '../geometry/modelBase';
@@ -1395,6 +1398,49 @@ export class Studio {
     const raw = h.kind === 'translate' ? delta : (delta * 180) / Math.PI;
     const value = this.gizmoStart.value + Math.round(raw / inc) * inc;
     if (Math.abs(value - tp.movement[h.key]) > 1e-9) this.setMovement(selectedTooth, { [h.key]: value }, false);
+  }
+
+  /**
+   * Import a finished setup exported from other software (one STL/PLY/OBJ per arch, final stage) and
+   * turn it into tooth movements by fitting each segmented crown onto it. The files must be in the
+   * same coordinate system as the initial scans (true for exports of the same case). `apply` replaces
+   * the movements of the plan; otherwise the setup is only stored as a reference for comparison.
+   */
+  async importReferenceSetup(files: { arch: Arch; name: string; buffer: ArrayBuffer }[], apply: boolean): Promise<{ teeth: number; poor: number[] }> {
+    const { frames, plan } = getState();
+    const movements: Record<number, Movement> = {};
+    const fits: Record<number, { rmsMm: number; inliers: number }> = {};
+    for (const f of files) {
+      const m = this.models[f.arch];
+      if (!m || !m.teeth().length) continue;
+      setState({ busy: `Fitting ${f.arch} teeth to ${f.name}…` });
+      await new Promise((r) => setTimeout(r, 0));
+      let g = parseScan(f.buffer, f.name);
+      g = g.index ? g : mergeVertices(g, 1e-4);
+      g.applyMatrix4(this.orientation); // same scanner frame as the initial scans → patient frame
+      const result = registerSetup(m, frames, g);
+      for (const [k, fit] of Object.entries(result)) {
+        const id = +k;
+        const mv = movementFromMatrix(frames[id], fit.T);
+        for (const key of Object.keys(mv) as (keyof Movement)[]) mv[key] = Math.round(mv[key] * 1000) / 1000;
+        movements[id] = mv;
+        fits[id] = { rmsMm: fit.rmsMm, inliers: fit.inliers };
+      }
+    }
+    setState({ busy: null });
+    const reference = { label: files.map((f) => f.name).join(', '), importedAt: new Date().toISOString(), movements, fits };
+    const next = structuredClone(plan);
+    next.reference = reference;
+    if (apply) for (const [k, mv] of Object.entries(movements)) if (next.teeth[+k]) next.teeth[+k].movement = mv;
+    this.setPlan(next);
+    const poor = Object.entries(fits).filter(([, f]) => f.rmsMm > 0.2 || f.inliers < 0.6).map(([k]) => +k);
+    return { teeth: Object.keys(movements).length, poor };
+  }
+
+  clearReference() {
+    const plan = structuredClone(getState().plan);
+    delete plan.reference;
+    this.setPlan(plan);
   }
 
   /** Overjet / overbite / midline at a stage (needs both arches, oriented, centrals segmented). */
