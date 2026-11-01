@@ -120,6 +120,8 @@ npm test         # unit + geometry tests
 npm run build    # static site in dist/
 ```
 
+**Maestro 3D `.m3d` projects** (Case & scans → *Open .m3d file…*): the studio searches the project for the stored 3D models (zip entries, compressed streams, embedded STL/PLY/OBJ) and assigns upper/lower automatically or lets you pick. The `.m3d` structure is not publicly documented, so this is best-effort until verified on real files; if nothing is recognised it shows a fingerprint to send for support.
+
 Projects are saved as a single `.smile` file (zip with scans, segmentation, plan and protocol). The
 last session is also auto-saved in the browser.
 

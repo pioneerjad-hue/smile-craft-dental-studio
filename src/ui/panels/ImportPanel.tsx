@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Arch } from '../../core/fdi';
-import { SCAN_EXTENSIONS, extensionOf } from '../../geometry/io';
+import { SCAN_EXTENSIONS, extensionOf, writeBinaryStl } from '../../geometry/io';
+import { readM3d } from '../../geometry/m3d';
+import type { FoundMesh } from '../../geometry/m3d';
 import { loadProjectZip, readAutosave } from '../../engine/project';
 import { setState, toast, useStudio } from '../../engine/store';
 import { studio } from '../../engine/studio';
@@ -11,6 +13,87 @@ function guessArch(name: string): Arch | null {
   if (/(upper|maxill|_u[._-]|^u[._-]|oben|sup)/.test(n)) return 'upper';
   if (/(lower|mandib|_l[._-]|^l[._-]|unten|inf)/.test(n)) return 'lower';
   return null;
+}
+
+function loadMesh(arch: Arch, mesh: FoundMesh, fileName: string) {
+  const g = mesh.geometry;
+  const stl = writeBinaryStl([{ positions: g.getAttribute('position').array, index: g.index ? g.index.array : undefined }]);
+  studio.loadScanBuffer(arch, stl.buffer as ArrayBuffer, `${fileName.replace(/\.m3d$/i, '')}-${arch}.stl`);
+}
+
+/** Open a Maestro 3D .m3d project: auto-assign arches when the names say so, otherwise let the user pick. */
+function M3dImport() {
+  const input = useRef<HTMLInputElement>(null);
+  const [found, setFound] = useState<{ file: string; meshes: FoundMesh[]; diagnostics: string } | null>(null);
+  const open = async (file: File) => {
+    setState({ busy: `Reading ${file.name}…` });
+    await new Promise((r) => setTimeout(r, 0));
+    try {
+      const r = readM3d(await file.arrayBuffer(), file.name);
+      if (!r.meshes.length) {
+        setFound({ file: file.name, meshes: [], diagnostics: r.diagnostics });
+        toast('No 3D models recognised in this .m3d file yet — see the fingerprint below.', 'error');
+        return;
+      }
+      const upper = r.meshes.filter((m) => m.hint === 'upper');
+      const lower = r.meshes.filter((m) => m.hint === 'lower');
+      if (upper.length === 1 && lower.length === 1) {
+        loadMesh('upper', upper[0], file.name);
+        loadMesh('lower', lower[0], file.name);
+        setFound(null);
+        toast(`Loaded upper and lower models from ${file.name}.`, 'success');
+      } else setFound({ file: file.name, meshes: r.meshes, diagnostics: r.diagnostics });
+    } finally {
+      setState({ busy: null });
+    }
+  };
+  return (
+    <div className="section">
+      <h3>Maestro 3D project (.m3d)</h3>
+      <button onClick={() => input.current?.click()}>Open .m3d file…</button>
+      <input
+        ref={input}
+        type="file"
+        accept=".m3d"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void open(f);
+          e.target.value = '';
+        }}
+      />
+      {found && found.meshes.length > 0 && (
+        <div className="card">
+          <div className="small" style={{ marginBottom: 6 }}>
+            {found.meshes.length} model(s) found in {found.file}. Assign them:
+          </div>
+          {found.meshes.slice(0, 8).map((m, i) => (
+            <div className="row between small" key={i}>
+              <span title={m.name}>
+                {m.name.slice(-28)} · {(m.triangles / 1000).toFixed(0)}k tris
+              </span>
+              <span className="row">
+                <button onClick={() => loadMesh('upper', m, found.file)}>Upper</button>
+                <button onClick={() => loadMesh('lower', m, found.file)}>Lower</button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {found && found.meshes.length === 0 && (
+        <div className="card small">
+          <b>Not recognised yet.</b> Please send this .m3d file (or this fingerprint) so support for its exact
+          structure can be added:
+          <pre className="mono" style={{ whiteSpace: 'pre-wrap', fontSize: 10.5, margin: '6px 0' }}>{found.diagnostics}</pre>
+          <button onClick={() => void navigator.clipboard?.writeText(found.diagnostics)}>Copy fingerprint</button>
+        </div>
+      )}
+      <div className="hint small">
+        Reads the models stored inside the Maestro project. Until it is verified on your files, exporting STL from
+        Maestro (File → Export) always works.
+      </div>
+    </div>
+  );
 }
 
 function ScanDrop({ arch }: { arch: Arch }) {
@@ -127,6 +210,8 @@ export function ImportPanel() {
           system so the bite is preserved.
         </div>
       </div>
+
+      <M3dImport />
 
       <div className="section">
         <h3>Try it</h3>
