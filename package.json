@@ -9,7 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:offline": "tsc --noEmit && vite build --config vite.offline.config.ts && node scripts/name-offline.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.2",
@@ -27,6 +28,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.2",
     "vite": "^6.0.7",
+    "vite-plugin-singlefile": "^2.1.0",
     "vitest": "^2.1.8"
   }
 }

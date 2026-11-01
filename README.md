@@ -83,6 +83,11 @@ your past approved cases as examples.
 
 ## Run it
 
+**Offline on your laptop (no internet, no GitHub):** `SmileCraftStudio.html` is the whole studio in one
+file. Keep it anywhere (Desktop, Documents) and double-click it to open in Chrome, Edge or Safari. Every
+build on GitHub also produces it: Actions → latest run → Artifacts → *SmileCraftStudio-offline*. To build it
+yourself: `npm run build:offline` → `dist-offline/SmileCraftStudio.html`.
+
 Hosted: enable **Settings → Pages → Source: GitHub Actions** on this repository; every push to
 `main` tests, builds and publishes the studio.
 

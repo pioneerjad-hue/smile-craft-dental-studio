@@ -26,6 +26,11 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - run: npm run build:offline
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SmileCraftStudio-offline
+          path: dist-offline/SmileCraftStudio.html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
