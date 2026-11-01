@@ -1,4 +1,11 @@
 import {
+  ConeGeometry,
+  CylinderGeometry,
+  GridHelper,
+  Plane,
+  Quaternion,
+  Ray,
+  TorusGeometry,
   AmbientLight,
   BufferAttribute,
   ArrowHelper,
@@ -28,7 +35,7 @@ import {
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-mesh-bvh';
 import type { Arch } from '../core/fdi';
-import type { Measurement } from '../core/types';
+import type { Measurement, MovementKey } from '../core/types';
 import type { View } from './store';
 
 BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -40,6 +47,19 @@ export interface Hit {
   face: number;
   point: Vector3;
   normal: Vector3;
+}
+
+export interface GizmoHandle {
+  kind: 'translate' | 'rotate';
+  key: MovementKey;
+  axis: Vector3;
+}
+
+export interface GizmoSpec {
+  origin: Vector3;
+  mesial: Vector3;
+  buccal: Vector3;
+  occlusal: Vector3;
 }
 
 export interface PatientAxes {
@@ -74,6 +94,11 @@ export class Viewer {
   private viewHeight = 90;
   private measureLabels: { el: HTMLDivElement; pos: Vector3 }[] = [];
 
+  readonly gizmo = new Group();
+  readonly guides = new Group();
+  private gizmoDrag: { handle: GizmoHandle; origin: Vector3; t0: number; v0: Vector3 } | null = null;
+  private toothLabels: { el: HTMLDivElement; pos: Vector3 }[] = [];
+  onGizmo: (handle: GizmoHandle, delta: number, phase: 'start' | 'move' | 'end') => void = () => {};
   onClick: (hit: Hit | null, ev: PointerEvent) => void = () => {};
   onPaint: (hit: Hit, phase: 'start' | 'move' | 'end') => void = () => {};
   paintMode = false;
@@ -106,7 +131,10 @@ export class Viewer {
     fill.position.set(-60, -20, 40);
     this.camera.add(fill);
 
-    this.scene.add(this.attachmentGroup, this.axesGroup, this.measureGroup);
+    this.scene.add(this.attachmentGroup, this.axesGroup, this.measureGroup, this.gizmo, this.guides);
+    this.gizmo.visible = false;
+    this.guides.visible = false;
+    this.buildGuides();
     this.brushCursor = new Mesh(new RingGeometry(0.9, 1, 48), new MeshBasicMaterial({ color: 0x22c55e, side: DoubleSide, depthTest: false, transparent: true }));
     this.brushCursor.renderOrder = 10;
     this.brushCursor.visible = false;
@@ -334,6 +362,19 @@ export class Viewer {
     el.addEventListener('contextmenu', (e) => e.preventDefault());
     el.addEventListener('pointerdown', (e) => {
       down = { x: e.clientX, y: e.clientY, button: e.button };
+      if (e.button === 0 && this.gizmo.visible) {
+        const h = this.pickGizmo(e.clientX, e.clientY);
+        if (h) {
+          const ray = this.rayAt(e.clientX, e.clientY);
+          const origin = this.gizmo.position.clone();
+          this.gizmoDrag = { handle: h, origin, t0: this.lineParam(ray, origin, h.axis), v0: this.planeVector(ray, origin, h.axis) ?? new Vector3(1, 0, 0) };
+          this.controls.enabled = false;
+          el.setPointerCapture(e.pointerId);
+          this.onGizmo(h, 0, 'start');
+          down = null;
+          return;
+        }
+      }
       if (this.paintMode && e.button === 0) {
         const hit = this.pick(e.clientX, e.clientY);
         if (hit) {
@@ -344,6 +385,21 @@ export class Viewer {
       }
     });
     el.addEventListener('pointermove', (e) => {
+      if (this.gizmoDrag) {
+        const g = this.gizmoDrag;
+        const ray = this.rayAt(e.clientX, e.clientY);
+        let delta = 0;
+        if (g.handle.kind === 'translate') delta = this.lineParam(ray, g.origin, g.handle.axis) - g.t0;
+        else {
+          const v = this.planeVector(ray, g.origin, g.handle.axis);
+          if (v) delta = Math.atan2(g.handle.axis.dot(new Vector3().crossVectors(g.v0, v)), g.v0.dot(v));
+        }
+        this.onGizmo(g.handle, delta, 'move');
+        return;
+      }
+      if (this.gizmo.visible && !this.paintMode) {
+        el.style.cursor = this.pickGizmo(e.clientX, e.clientY) ? 'grab' : this.defaultCursor;
+      }
       if (this.paintMode) {
         const hit = this.pick(e.clientX, e.clientY);
         this.updateCursor(hit);
@@ -351,6 +407,12 @@ export class Viewer {
       }
     });
     el.addEventListener('pointerup', (e) => {
+      if (this.gizmoDrag) {
+        this.onGizmo(this.gizmoDrag.handle, 0, 'end');
+        this.gizmoDrag = null;
+        this.controls.enabled = true;
+        return;
+      }
       if (painting) {
         painting = false;
         const hit = this.pick(e.clientX, e.clientY);
@@ -437,11 +499,12 @@ export class Viewer {
     this.requestRender();
   }
 
-  setAxes(items: { origin: Vector3; dirs: [Vector3, number][] }[]) {
+  setAxes(items: { origin: Vector3; dirs: [Vector3, number][]; length?: number }[]) {
     this.axesGroup.clear();
     for (const it of items) {
+      const len = it.length ?? 7;
       for (const [d, color] of it.dirs) {
-        const a = new ArrowHelper(d, it.origin, 7, color, 1.4, 0.8);
+        const a = new ArrowHelper(d, it.origin, len, color, len * 0.2, len * 0.11);
         (a.line.material as LineBasicMaterial).depthTest = false;
         (a.cone.material as MeshBasicMaterial).depthTest = false;
         a.renderOrder = 20;
@@ -489,7 +552,7 @@ export class Viewer {
   private updateLabels() {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
-    for (const { el, pos } of this.measureLabels) {
+    for (const { el, pos } of [...this.measureLabels, ...this.toothLabels]) {
       const p = pos.clone().project(this.camera);
       el.style.transform = `translate(${((p.x + 1) / 2) * w}px, ${((1 - p.y) / 2) * h}px) translate(-50%, -140%)`;
     }
@@ -497,6 +560,122 @@ export class Viewer {
 
   setVisible(obj: Object3D | null, visible: boolean) {
     if (obj) obj.visible = visible;
+    this.requestRender();
+  }
+
+  defaultCursor = 'default';
+
+  private rayAt(clientX: number, clientY: number): Ray {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    const rc = new Raycaster();
+    rc.setFromCamera(ndc, this.camera);
+    return rc.ray.clone();
+  }
+
+  /** Parameter along line (origin, axis) of the point closest to the ray (mm). */
+  private lineParam(ray: Ray, origin: Vector3, axis: Vector3): number {
+    const w0 = ray.origin.clone().sub(origin);
+    const b = ray.direction.dot(axis);
+    const denom = 1 - b * b;
+    if (denom < 1e-6) return 0;
+    return (axis.dot(w0) - b * ray.direction.dot(w0)) / denom;
+  }
+
+  /** Vector from origin to the ray's hit on the plane ⟂ axis through origin. */
+  private planeVector(ray: Ray, origin: Vector3, axis: Vector3): Vector3 | null {
+    const hit = ray.intersectPlane(new Plane().setFromNormalAndCoplanarPoint(axis, origin), new Vector3());
+    return hit ? hit.sub(origin) : null;
+  }
+
+  private pickGizmo(clientX: number, clientY: number): GizmoHandle | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    const rc = new Raycaster();
+    rc.setFromCamera(ndc, this.camera);
+    const hits = rc.intersectObjects(this.gizmo.children, true);
+    for (const h of hits) {
+      let o: Object3D | null = h.object;
+      while (o && !o.userData.handle) o = o.parent;
+      if (o) return o.userData.handle as GizmoHandle;
+    }
+    return null;
+  }
+
+  /**
+   * Tooth-movement navigator: double arrows translate along the tooth's mesial (red), buccal (green)
+   * and long (blue) axes; rings rotate it (rotation = cyan, tip = orange, torque = violet).
+   */
+  setGizmo(spec: GizmoSpec | null) {
+    this.gizmo.clear();
+    this.gizmo.visible = !!spec;
+    if (!spec) return this.requestRender();
+    this.gizmo.position.copy(spec.origin);
+    const M = spec.mesial, B = spec.buccal, O = spec.occlusal;
+    const up = new Vector3(0, 1, 0);
+    const mat = (color: number) => new MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 });
+    const pickMat = new MeshBasicMaterial({ visible: false });
+    const arrow = (axis: Vector3, color: number, key: MovementKey) => {
+      const g = new Group();
+      const len = 7;
+      const shaft = new Mesh(new CylinderGeometry(0.16, 0.16, 2 * len, 8), mat(color));
+      const head1 = new Mesh(new ConeGeometry(0.6, 1.6, 14), mat(color));
+      head1.position.y = len;
+      const head2 = new Mesh(new ConeGeometry(0.6, 1.6, 14), mat(color));
+      head2.position.y = -len;
+      head2.rotation.x = Math.PI;
+      const pick = new Mesh(new CylinderGeometry(0.9, 0.9, 2 * len + 3, 8), pickMat);
+      g.add(shaft, head1, head2, pick);
+      g.quaternion.copy(new Quaternion().setFromUnitVectors(up, axis.clone().normalize()));
+      g.userData.handle = { kind: 'translate', key, axis: axis.clone().normalize() } satisfies GizmoHandle;
+      return g;
+    };
+    const ring = (axis: Vector3, color: number, key: MovementKey, r: number) => {
+      const g = new Group();
+      const torus = new Mesh(new TorusGeometry(r, 0.14, 8, 64), mat(color));
+      const pick = new Mesh(new TorusGeometry(r, 0.7, 6, 48), pickMat);
+      g.add(torus, pick);
+      g.quaternion.copy(new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), axis.clone().normalize()));
+      g.userData.handle = { kind: 'rotate', key, axis: axis.clone().normalize() } satisfies GizmoHandle;
+      return g;
+    };
+    this.gizmo.add(
+      arrow(M, 0xef4444, 'mesial'),
+      arrow(B, 0x22c55e, 'buccal'),
+      arrow(O, 0x3b82f6, 'extrusion'),
+      ring(new Vector3().crossVectors(B, M), 0x22d3ee, 'rotation', 5),
+      ring(new Vector3().crossVectors(O, M), 0xf59e0b, 'tip', 5.8),
+      ring(new Vector3().crossVectors(O, B), 0xa78bfa, 'torque', 6.6),
+    );
+    this.gizmo.traverse((o) => (o.renderOrder = 50));
+    this.requestRender();
+  }
+
+  /** Occlusal-plane grid and midline guides for the orientation step (patient coordinates). */
+  private buildGuides() {
+    const grid = new GridHelper(100, 20, 0x38bdf8, 0x24314d);
+    grid.rotation.x = Math.PI / 2; // XY plane = occlusal plane
+    (grid.material as LineBasicMaterial).transparent = true;
+    (grid.material as LineBasicMaterial).opacity = 0.6;
+    const line = (a: Vector3, b: Vector3, color: number) => new Line(new BufferGeometry().setFromPoints([a, b]), new LineBasicMaterial({ color, depthTest: false }));
+    this.guides.add(grid, line(new Vector3(0, -60, 0), new Vector3(0, 60, 0), 0xef4444), line(new Vector3(-60, 0, 0), new Vector3(60, 0, 0), 0x22c55e));
+  }
+
+  setGuides(visible: boolean) {
+    this.guides.visible = visible;
+    this.requestRender();
+  }
+
+  /** Tooth-number labels floating over the crowns. */
+  setToothLabels(list: { text: string; pos: Vector3 }[]) {
+    for (const l of this.toothLabels) l.el.remove();
+    this.toothLabels = list.map(({ text, pos }) => {
+      const el = document.createElement('div');
+      el.className = 'tooth-label';
+      el.textContent = text;
+      this.overlay.appendChild(el);
+      return { el, pos };
+    });
     this.requestRender();
   }
 

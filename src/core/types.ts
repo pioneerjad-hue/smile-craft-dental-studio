@@ -62,6 +62,18 @@ export interface ToothFrame {
   autoWidthMm: number;
   /** Crown height along the occlusal axis (mm). */
   crownHeightMm: number;
+  /** Centre of the cervical margin (CEJ estimate). */
+  cervical?: Vec3;
+  /** Artificial root apex. */
+  apex?: Vec3;
+  rootLengthMm?: number;
+}
+
+/** Clinician correction of an automatically computed tooth axis (degrees, same sense as Movement). */
+export interface AxisCorrection {
+  tip: number;
+  torque: number;
+  rotation: number;
 }
 
 export type AttachmentType =
@@ -105,6 +117,10 @@ export interface ToothPlan {
   locked?: boolean;
   /** Constraint: these degrees of freedom are fixed at 0 for this tooth. */
   lockedAxes?: MovementKey[];
+  /** Manual correction of the tooth's long axis / frame (set in the Axes step). */
+  axisCorrection?: AxisCorrection;
+  /** Root length override (mm); default comes from the protocol table. */
+  rootLengthMm?: number;
   /** Tooth is planned for extraction / missing. */
   extracted?: boolean;
   note?: string;
@@ -181,8 +197,14 @@ export interface Protocol {
     maxStages: number;
   };
   biomechanics: {
-    /** Distance from crown centroid to estimated centre of rotation along the long axis (mm). */
+    /** Legacy: distance from crown centroid to centre of rotation (mm). Superseded by roots. */
     pivotApicalMm: Record<ToothType, number>;
+    /** Long axis: from crown shape (cervical centre → cusp tips) or perpendicular to the occlusal plane. */
+    axisMode: 'crown' | 'occlusalPlane';
+    /** Average root lengths (mm) by tooth number 1–8. */
+    rootLengthMm: { upper: number[]; lower: number[] };
+    /** Centre of resistance as a fraction of root length from the cervical margin. */
+    centerOfResistanceRatio: number;
   };
   totalLimits: TotalLimits & { overrides: ToothTypeOverrides<TotalLimits> };
   ipr: {

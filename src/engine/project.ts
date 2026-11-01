@@ -34,6 +34,9 @@ export function buildProjectZip(): Uint8Array {
     settings: s.settings,
     layers: s.layers,
     modelBuilder: s.modelBuilder,
+    orientation: studio.orientation.elements,
+    oriented: s.oriented,
+    missingTeeth: s.missingTeeth,
     arches,
   };
   files['case.json'] = strToU8(JSON.stringify(json, null, 2));
@@ -46,7 +49,10 @@ export function loadProjectZip(data: Uint8Array) {
   const json = JSON.parse(strFromU8(files['case.json']));
   if (json.format !== FORMAT) throw new Error(`Unsupported project format ${json.format}`);
   studio.resetCase();
+  if (Array.isArray(json.orientation)) studio.orientation.fromArray(json.orientation);
   setState({
+    oriented: !!json.oriented,
+    ...(json.missingTeeth ? { missingTeeth: json.missingTeeth } : {}),
     caseInfo: json.caseInfo,
     protocol: normalizeProtocol(json.protocol),
     settings: { ...getState().settings, ...json.settings },

@@ -1,6 +1,6 @@
 import { contralateral, shortLabel, sortTeeth, toothName } from '../../core/fdi';
 import { limitsFor } from '../../core/staging';
-import { crownDisplacement } from '../../core/transform';
+import { crownDisplacement, movementMatrix, v3 } from '../../core/transform';
 import { ATTACHMENT_LABEL, MOVEMENT_KEYS, MOVEMENT_META, isZeroMovement } from '../../core/types';
 import type { AttachmentType, MovementKey, StageLimits } from '../../core/types';
 import { newAttachment } from '../../core/aiBrief';
@@ -25,7 +25,7 @@ export function PlanPanel() {
       <div className="section">
         <h3>Select tooth</h3>
         <Odontogram current={selected} onPick={(id) => setState({ selectedTooth: id })} mode="plan" />
-        <div className="hint small">Click a tooth here or in the 3D view. Movements are in each tooth's clinical frame.</div>
+        <div className="hint small">Click a tooth here or in the 3D view, then drag the navigator: arrows move it (red mesial-distal, green buccal-lingual, blue extrusion-intrusion), rings rotate it (cyan rotation, orange tip, violet torque).</div>
       </div>
 
       <div className="stat">
@@ -147,6 +147,7 @@ export function ToothInspector() {
   const st = staging?.teeth[id];
   const limits = limitsFor(protocol, id);
   const disp = frame ? crownDisplacement(frame, tp.movement) : null;
+  const apexMove = frame?.apex ? v3(frame.apex).applyMatrix4(movementMatrix(frame, tp.movement)).distanceTo(v3(frame.apex)) : null;
   const mirror = contralateral(id);
   const required = triggeredAttachmentRules(protocol, id, tp.movement);
   const toothIssues = issues.filter((i) => i.tooth === id);
@@ -217,6 +218,7 @@ export function ToothInspector() {
         {disp && (
           <div className="small muted">
             Crown centre moves {disp.total.toFixed(2)} mm (M {disp.mesial.toFixed(2)}, B {disp.buccal.toFixed(2)}, O {disp.occlusal.toFixed(2)})
+            {apexMove !== null && ` · root apex moves ${apexMove.toFixed(2)} mm`}
             {st && st.stagesNeeded > 0 && (
               <>
                 {' '}

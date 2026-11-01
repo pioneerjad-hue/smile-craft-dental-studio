@@ -1,7 +1,7 @@
-import { Vector3 } from 'three';
-import { mesialStep, sequence, toothType } from '../core/fdi';
+import { Quaternion, Vector3 } from 'three';
+import { mesialStep, sequence, toothNumber } from '../core/fdi';
 import { tuple } from '../core/transform';
-import type { Protocol, ToothFrame } from '../core/types';
+import type { AxisCorrection, Protocol, ToothFrame } from '../core/types';
 import type { ArchModel } from './archModel';
 
 /** Eigen-decomposition of a symmetric 3×3 matrix (Jacobi). Returns eigenvectors sorted by ascending eigenvalue. */
@@ -97,27 +97,59 @@ export function archOcclusalNormal(model: ArchModel, centroids: Vector3[]): Vect
 
 /**
  * Clinical frames for every segmented tooth of an arch.
- * mesial  = arch tangent through neighbouring crown centroids, pointing to the midline
- * occlusal= occlusal-plane normal
- * buccal  = in-plane perpendicular pointing away from the arch centre
+ * occlusal = crown long axis: cervical-margin centre → cusp tips/incisal edge (or the occlusal-plane
+ *            normal when axisMode = 'occlusalPlane' or the crown axis is implausible)
+ * mesial   = arch tangent through neighbouring crowns, pointing to the midline, ⟂ occlusal
+ * buccal   = perpendicular, pointing out of the arch
+ * Optional per-tooth corrections (tip / torque / rotation, degrees) rotate the frame.
+ * Roots: apex = cervical centre − occlusal × root length; centre of resistance at
+ * `centerOfResistanceRatio` of the root length.
  */
-export function computeArchFrames(model: ArchModel, protocol: Protocol): Record<number, ToothFrame> {
+export function computeArchFrames(
+  model: ArchModel,
+  protocol: Protocol,
+  perTooth: Record<number, { axisCorrection?: AxisCorrection; rootLengthMm?: number }> = {},
+): Record<number, ToothFrame> {
   const present = new Set(model.teeth());
   const ids = sequence(model.arch).filter((id) => present.has(id));
   const stats = new Map(ids.map((id) => [id, model.toothStats(id)]));
   const centroids = ids.map((id) => stats.get(id)!.centroid);
-  const O = archOcclusalNormal(model, centroids);
+  const plane = archOcclusalNormal(model, centroids);
   const center = new Vector3();
   centroids.forEach((c) => center.add(c));
   center.multiplyScalar(1 / Math.max(1, centroids.length));
-  const flat = (v: Vector3) => v.addScaledVector(O, -v.dot(O));
+  const bio = protocol.biomechanics;
 
   const frames: Record<number, ToothFrame> = {};
   ids.forEach((id, i) => {
     const c = stats.get(id)!.centroid;
+    const verts = stats.get(id)!.vertices;
+    const v = new Vector3();
+    // cervical centre: mean of the crown vertices bordering the gingiva
+    const cerv = new Vector3();
+    let nCerv = 0;
+    let maxH = -Infinity, minH = Infinity;
+    for (const vi of verts) {
+      const h = model.position(vi, v).dot(plane);
+      maxH = Math.max(maxH, h);
+      minH = Math.min(minH, h);
+      let margin = false;
+      for (let j = model.adjOffsets[vi]; j < model.adjOffsets[vi + 1]; j++) if (model.labels[model.adj[j]] === 0) margin = true;
+      if (margin) cerv.add(v), nCerv++;
+    }
+    if (nCerv) cerv.multiplyScalar(1 / nCerv);
+    else cerv.copy(c).addScaledVector(plane, minH - c.dot(plane));
+    let O = plane.clone();
+    if (bio.axisMode !== 'occlusalPlane') {
+      // Long axis: least-squares line through the centres of horizontal crown slices between 35 % and
+      // 90 % of the crown height. The cervical band is excluded so papillae / margin irregularities
+      // do not tilt the axis.
+      const A = crownAxisFromSlices(model, verts, plane, minH, maxH);
+      if (A && A.dot(plane) > Math.cos((40 * Math.PI) / 180)) O = A;
+    }
+    const flat = (u: Vector3) => u.addScaledVector(O, -u.dot(O));
     const prev = i > 0 ? centroids[i - 1] : null;
     const next = i + 1 < ids.length ? centroids[i + 1] : null;
-    // Tangent in increasing-sequence direction (patient right → left).
     let T: Vector3;
     if (prev && next) T = next.clone().sub(prev);
     else if (next) T = next.clone().sub(c);
@@ -126,16 +158,26 @@ export function computeArchFrames(model: ArchModel, protocol: Protocol): Record<
     flat(T);
     if (T.lengthSq() < 1e-9) T = flat(new Vector3(1, 0, 0));
     T.normalize();
-    const M = T.multiplyScalar(mesialStep(id));
-    const B = new Vector3().crossVectors(O, M).normalize();
-    const outward = flat(c.clone().sub(center));
-    if (outward.lengthSq() > 1e-6 ? B.dot(outward) < 0 : false) B.negate();
+    let M = T.multiplyScalar(mesialStep(id));
+    let B = new Vector3().crossVectors(O, M).normalize();
+    const outward = c.clone().sub(center);
+    outward.addScaledVector(plane, -outward.dot(plane));
+    if (outward.lengthSq() > 1e-6 && B.dot(outward) < 0) B.negate();
+    M = new Vector3().crossVectors(B, O).normalize().multiplyScalar(Math.sign(new Vector3().crossVectors(B, O).dot(M)) || 1);
 
-    // Crown height along O, then mesio-distal width at contact level (35–90 % of the crown height
-    // from the margin): the cervical band is excluded because papillae and fused contacts make the
-    // segmentation boundary unreliable there, and the contact points lie in the middle/occlusal third.
-    const verts = stats.get(id)!.vertices;
-    const v = new Vector3();
+    const corr = perTooth[id]?.axisCorrection;
+    if (corr && (corr.tip || corr.torque || corr.rotation)) {
+      const D = Math.PI / 180;
+      const q = new Quaternion()
+        .setFromAxisAngle(new Vector3().crossVectors(O, B).normalize(), corr.torque * D)
+        .multiply(new Quaternion().setFromAxisAngle(new Vector3().crossVectors(O, M).normalize(), corr.tip * D))
+        .multiply(new Quaternion().setFromAxisAngle(new Vector3().crossVectors(B, M).normalize(), corr.rotation * D));
+      M.applyQuaternion(q);
+      B.applyQuaternion(q);
+      O.applyQuaternion(q);
+    }
+
+    // crown height along O; mesio-distal width at contact level (35–90 % of crown height)
     const ms = new Float32Array(verts.length);
     const os = new Float32Array(verts.length);
     let minO = Infinity, maxO = -Infinity;
@@ -154,7 +196,9 @@ export function computeArchFrames(model: ArchModel, protocol: Protocol): Record<
       minM = Math.min(minM, ms[k]);
       maxM = Math.max(maxM, ms[k]);
     }
-    const pivot = c.clone().addScaledVector(O, -protocol.biomechanics.pivotApicalMm[toothType(id)]);
+    const rootLen = perTooth[id]?.rootLengthMm ?? bio.rootLengthMm[model.arch][toothNumber(id) - 1] ?? 13;
+    const apex = cerv.clone().addScaledVector(O, -rootLen);
+    const pivot = cerv.clone().addScaledVector(O, -rootLen * bio.centerOfResistanceRatio);
     frames[id] = {
       id,
       centroid: tuple(c),
@@ -164,6 +208,9 @@ export function computeArchFrames(model: ArchModel, protocol: Protocol): Record<
       pivot: tuple(pivot),
       autoWidthMm: Number.isFinite(maxM) ? maxM - minM : 0,
       crownHeightMm: Number.isFinite(maxO) ? maxO - minO : 0,
+      cervical: tuple(cerv),
+      apex: tuple(apex),
+      rootLengthMm: rootLen,
     };
   });
   return frames;
@@ -179,4 +226,41 @@ export function crownSamples(model: ArchModel, id: number, max = 96): [number, n
     out.push([model.base[3 * v], model.base[3 * v + 1], model.base[3 * v + 2]]);
   }
   return out;
+}
+
+/** Crown long axis from the centres of horizontal slices (35–90 % of crown height). */
+function crownAxisFromSlices(model: ArchModel, verts: Uint32Array, plane: Vector3, minH: number, maxH: number): Vector3 | null {
+  const e1 = Math.abs(plane.x) < 0.9 ? new Vector3(1, 0, 0) : new Vector3(0, 1, 0);
+  e1.addScaledVector(plane, -e1.dot(plane)).normalize();
+  const e2 = new Vector3().crossVectors(plane, e1);
+  const slices = 6;
+  const pts: { h: number; x: number; y: number }[] = [];
+  const v = new Vector3();
+  for (let k = 0; k < slices; k++) {
+    const lo = minH + (0.35 + (0.55 * k) / slices) * (maxH - minH);
+    const hi = minH + (0.35 + (0.55 * (k + 1)) / slices) * (maxH - minH);
+    let sx = 0, sy = 0, n = 0, minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const vi of verts) {
+      model.position(vi, v);
+      const h = v.dot(plane);
+      if (h < lo || h >= hi) continue;
+      const x = v.dot(e1), y = v.dot(e2);
+      sx += x; sy += y; n++;
+      minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+    }
+    // bounding-box centre is insensitive to uneven vertex density on the shell
+    if (n >= 8) pts.push({ h: (lo + hi) / 2, x: (minX + maxX) / 2, y: (minY + maxY) / 2 });
+  }
+  if (pts.length < 3) return null;
+  const mh = pts.reduce((a, p) => a + p.h, 0) / pts.length;
+  const mx = pts.reduce((a, p) => a + p.x, 0) / pts.length;
+  const my = pts.reduce((a, p) => a + p.y, 0) / pts.length;
+  let shh = 0, shx = 0, shy = 0;
+  for (const p of pts) {
+    shh += (p.h - mh) ** 2;
+    shx += (p.h - mh) * (p.x - mx);
+    shy += (p.h - mh) * (p.y - my);
+  }
+  if (shh < 1e-9) return null;
+  return plane.clone().addScaledVector(e1, shx / shh).addScaledVector(e2, shy / shh).normalize();
 }

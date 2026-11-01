@@ -43,6 +43,13 @@ export function defaultProtocol(): Protocol {
         secondMolar: 7,
         thirdMolar: 6,
       },
+      axisMode: 'crown',
+      // Average root lengths (Wheeler's Dental Anatomy averages), teeth 1–8
+      rootLengthMm: {
+        upper: [13, 13, 17, 14, 14, 13, 12, 11],
+        lower: [12.5, 14, 16, 14, 14.5, 14, 13, 11],
+      },
+      centerOfResistanceRatio: 0.4,
     },
     totalLimits: {
       translationMm: 4,
@@ -127,7 +134,12 @@ export function normalizeProtocol(p: Partial<Protocol> | undefined): Protocol {
       limits: { ...d.staging.limits, ...p.staging?.limits },
       overrides: p.staging?.overrides ?? d.staging.overrides,
     },
-    biomechanics: { pivotApicalMm: { ...d.biomechanics.pivotApicalMm, ...p.biomechanics?.pivotApicalMm } },
+    biomechanics: {
+      ...d.biomechanics,
+      ...p.biomechanics,
+      pivotApicalMm: { ...d.biomechanics.pivotApicalMm, ...p.biomechanics?.pivotApicalMm },
+      rootLengthMm: { ...d.biomechanics.rootLengthMm, ...p.biomechanics?.rootLengthMm },
+    },
     totalLimits: { ...d.totalLimits, ...p.totalLimits, overrides: p.totalLimits?.overrides ?? d.totalLimits.overrides },
     ipr: { ...d.ipr, ...p.ipr },
     attachments: { ...d.attachments, ...p.attachments, rules: p.attachments?.rules ?? d.attachments.rules },

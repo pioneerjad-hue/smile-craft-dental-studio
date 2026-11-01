@@ -151,8 +151,8 @@ export function ImportPanel() {
       </div>
 
       <div className="grow" />
-      <button className="primary" disabled={!hasScan} onClick={() => goToStep(teeth.length ? 'plan' : 'segment')}>
-        {teeth.length ? 'Continue to planning →' : 'Continue to segmentation →'}
+      <button className="primary" disabled={!hasScan} onClick={() => goToStep(teeth.length ? 'plan' : 'orient')}>
+        {teeth.length ? 'Continue to planning →' : 'Continue: orient the models →'}
       </button>
     </>
   );

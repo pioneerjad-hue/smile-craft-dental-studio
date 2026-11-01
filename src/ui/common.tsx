@@ -9,12 +9,14 @@ export function Odontogram({ current, onPick, mode }: { current: number | null; 
   const teeth = useStudio((s) => s.teeth);
   const plan = useStudio((s) => s.plan);
   const issues = useStudio((s) => s.issues);
+  const missing = useStudio((s) => s.missingTeeth);
   const present = new Set(teeth);
   const withIssue = new Set(issues.filter((i) => i.tooth).map((i) => i.tooth!));
   const cell = (id: number) => {
     const tp = plan.teeth[id];
     const cls = ['tooth-btn'];
     if (present.has(id)) cls.push('seg');
+    else if (mode === 'segment' && missing.includes(id)) cls.push('missing');
     else if (mode === 'plan') cls.push('absent');
     if (tp && !isZeroMovement(tp.movement)) cls.push('moving');
     if (tp?.locked) cls.push('locked');
@@ -25,7 +27,7 @@ export function Odontogram({ current, onPick, mode }: { current: number | null; 
       <button
         key={id}
         className={cls.join(' ')}
-        title={`${id} · ${shortLabel(id)} · ${toothName(id)}${present.has(id) ? '' : ' (not segmented)'}`}
+        title={`${id} · ${shortLabel(id)} · ${toothName(id)}${present.has(id) ? '' : missing.includes(id) ? ' (missing)' : ' (not segmented)'}`}
         disabled={mode === 'plan' && !present.has(id)}
         onClick={() => onPick(id)}
       >

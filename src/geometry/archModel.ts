@@ -134,6 +134,34 @@ export class ArchModel {
     return k;
   }
 
+  /**
+   * Rigidly re-orient the scan (used by model orientation). Labels, seeds, curvature and topology
+   * are unaffected by a rigid transform.
+   */
+  applyMatrix(m: Matrix4): void {
+    const v = new Vector3();
+    for (let i = 0; i < this.vertexCount; i++) {
+      v.fromArray(this.base, 3 * i).applyMatrix4(m);
+      this.base[3 * i] = v.x;
+      this.base[3 * i + 1] = v.y;
+      this.base[3 * i + 2] = v.z;
+    }
+    const rot = new Matrix4().extractRotation(m);
+    for (let i = 0; i < this.vertexCount; i++) {
+      v.fromArray(this.normals, 3 * i).applyMatrix4(rot);
+      this.normals[3 * i] = v.x;
+      this.normals[3 * i + 1] = v.y;
+      this.normals[3 * i + 2] = v.z;
+    }
+    const attr = this.geometry.getAttribute('position') as BufferAttribute;
+    (attr.array as Float32Array).set(this.base);
+    attr.needsUpdate = true;
+    this.geometry.computeVertexNormals();
+    this.geometry.computeBoundingBox();
+    this.geometry.computeBoundingSphere();
+    this.invalidate();
+  }
+
   position(i: number, out = new Vector3()): Vector3 {
     return out.fromArray(this.base, 3 * i);
   }

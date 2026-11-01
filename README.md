@@ -11,7 +11,9 @@ Everything runs locally in the browser — scans never leave the computer.
 | Step | What you do | What the studio does |
 | --- | --- | --- |
 | **1 · Case & scans** | Enter patient/case ID, drop upper & lower STL/PLY/OBJ (from iTero, TRIOS, Medit, Primescan…) | Merges the mesh, keeps the bite (both arches in scan coordinates) |
-| **2 · Segment** | Click each crown once (auto-advances 17→27, 47→37). Brush to fix | Competitive watershed: teeth and gum flood the surface and meet at the gingival margin and contacts. Fissures stay inside the crown. Brush strokes are hard constraints |
+| **Orient** | *Auto-orient*, or click 3 landmarks (incisal point, right and left first-molar MB cusps), then fine-tune ±1°/±5° | Both arches move together (bite kept) into patient coordinates: +X right, +Y anterior, +Z up, occlusal plane on the grid |
+| **2 · Segment** | Mark missing teeth, *Auto-segment*, check the numbers on the crowns; click a crown to fix its number, brush to fix edges | Auto-seeding along the fitted arch curve (valleys between crowns matched to expected widths), then competitive watershed: teeth and gum meet at the gingival margin and contacts |
+| **Axes** | Check each tooth's axes; correct tip / torque / rotation of the axis; adjust root length | Long axis from crown cross-sections (35–90 % height), mesial along the arch, buccal outward. Template roots (1–3 roots by tooth type) from protocol root lengths; centre of resistance at 40 % of root length |
 | **3 · Plan** | Select a tooth, type or step its movement | Live 3D preview, per-movement stage cost, crown displacement, protocol warnings |
 | **4 · Stage & check** | Choose staging mode, measure contacts, apply suggested IPR | Stage count from protocol limits, tooth timeline, contact overlap/gap per contact, IPR suggestions |
 | **5 · Protocol & AI** | Edit/save your protocol, export the AI planning brief, import an AI plan | Same rules drive manual planning, validation and the AI |
@@ -29,6 +31,11 @@ any scan holes), so each stage exports as one closed, consistently wound solid. 
 
 **Simulation video**: H.264 MP4 (Full HD, HD, square or vertical), one animated segment per chosen view with
 case name, view and aligner counter. Needs a current Chrome, Edge or Safari (WebCodecs).
+
+**3D navigator** (Plan step): drag the arrows to translate the selected tooth (red mesio-distal, green
+bucco-lingual, blue extrusion-intrusion) and the rings to rotate it (cyan rotation, orange tip, violet torque),
+in 0.05 mm / 0.5° steps, always in that tooth's own axes. The plan also reports root-apex movement and
+warns when neighbouring roots converge.
 
 Keyboard: `1`–`5` views · `[` `]` stage · `Space` play · `G` initial-position overlay · `M` measure ·
 `S`/`B`/`E` segmentation tools · `Ctrl+Z`/`Ctrl+Y` undo/redo · `Ctrl+S` save project.

@@ -210,18 +210,60 @@ function RulesEditor({ protocol, set }: { protocol: Protocol; set: (p: Protocol)
         <div className="hint small">Add or edit rules (trigger, tooth types) in the JSON tab.</div>
       </div>
       <div className="section">
-        <h3>Centre of rotation (mm apical of crown centre)</h3>
-        {TOOTH_TYPES.map((t) => (
-          <div className="field" key={t}>
-            <label>{TOOTH_TYPE_LABEL[t]}</label>
-            <NumberInput
-              value={protocol.biomechanics.pivotApicalMm[t]}
-              step={0.5}
-              min={0}
-              onChange={(v) => set({ ...protocol, biomechanics: { pivotApicalMm: { ...protocol.biomechanics.pivotApicalMm, [t]: v } } })}
-            />
-          </div>
-        ))}
+        <h3>Axes & roots</h3>
+        <div className="field">
+          <label>Long axis</label>
+          <select value={protocol.biomechanics.axisMode} onChange={(e) => set({ ...protocol, biomechanics: { ...protocol.biomechanics, axisMode: e.target.value as 'crown' | 'occlusalPlane' } })}>
+            <option value="crown">From crown shape</option>
+            <option value="occlusalPlane">Perpendicular to occlusal plane</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>Centre of resist.</label>
+          <NumberInput
+            value={protocol.biomechanics.centerOfResistanceRatio * 100}
+            step={5}
+            min={10}
+            max={70}
+            digits={0}
+            onChange={(v) => set({ ...protocol, biomechanics: { ...protocol.biomechanics, centerOfResistanceRatio: v / 100 } })}
+          />
+        </div>
+        <div className="hint small">% of root length from the cervical margin (≈ 40 % for single-rooted teeth).</div>
+        <table className="grid">
+          <thead>
+            <tr>
+              <th>Root length mm</th>
+              {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                <th key={n}>{n}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {(['upper', 'lower'] as const).map((arch) => (
+              <tr key={arch}>
+                <td style={{ textTransform: 'capitalize' }}>{arch}</td>
+                {protocol.biomechanics.rootLengthMm[arch].map((len, i) => (
+                  <td key={i}>
+                    <NumberInput
+                      width={40}
+                      value={len}
+                      step={0.5}
+                      min={5}
+                      max={30}
+                      digits={1}
+                      onChange={(v) => {
+                        const row = protocol.biomechanics.rootLengthMm[arch].slice();
+                        row[i] = v;
+                        set({ ...protocol, biomechanics: { ...protocol.biomechanics, rootLengthMm: { ...protocol.biomechanics.rootLengthMm, [arch]: row } } });
+                      }}
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
       <div className="section">
         <h3>Clinical rules (free text, for the AI)</h3>

@@ -37,6 +37,7 @@ export function LayersPanel({ onClose }: { onClose: () => void }) {
         </div>
         <LayerRow id={`${p}Gum` as LayerId} />
         <LayerRow id={`${p}Teeth` as LayerId} />
+        <LayerRow id={`${p}Roots` as LayerId} />
         {modelBuilder.enabled && <LayerRow id={`${p}Base` as LayerId} />}
       </div>
     );
@@ -68,7 +69,7 @@ export function LayersPanel({ onClose }: { onClose: () => void }) {
           ))}
         </div>
       )}
-      <div className="hint small">Lower the gingiva opacity to see crown margins and contacts through the gum.</div>
+      <div className="hint small">Lower the gingiva opacity to see the roots, crown margins and contacts through the gum.</div>
     </div>
   );
 }

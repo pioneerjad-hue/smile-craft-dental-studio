@@ -12,17 +12,31 @@ export function SegmentPanel() {
   const [settings, set] = useSettings();
   const segmented = new Set(teeth);
   const archMissing = !arches[archOf(active)];
+  const missingMode = tool === 'missing';
+  const missingTeeth = useStudio((s) => s.missingTeeth);
 
   return (
     <>
       <div className="section">
-        <h3>Tooth segmentation</h3>
+        <h3>1 · Missing teeth</h3>
+        <div className="hint small">Mark teeth that are not in the mouth (third molars are pre-marked). Auto-segmentation then numbers the remaining crowns correctly.</div>
+        <button className={missingMode ? 'active' : ''} onClick={() => setState({ tool: missingMode ? 'seed' : 'missing' })}>
+          {missingMode ? '✓ Done marking missing teeth' : '✕ Mark missing teeth'}
+        </button>
+        {missingMode && <div className="small" style={{ color: 'var(--warn)' }}>Click teeth in the chart to toggle missing: {missingTeeth.join(', ') || 'none'}</div>}
+      </div>
+
+      <div className="section">
+        <h3>2 · Segment</h3>
+        <button className="primary" onClick={() => studio.autoSegment()}>
+          ✦ Auto-segment all teeth
+        </button>
         <div className="hint">
-          Pick a tooth in the chart, then <b>click its crown</b> in the 3D view. Teeth and gum compete along the natural
-          valleys (gingival margin and contacts), so one click per tooth is usually enough. With auto-advance on, just
-          click the teeth in order from 17 to 27 and 47 to 37.
+          Then check the number on every crown. To fix: pick the right tooth in the chart and <b>click its crown</b>
+          (this also renumbers a wrongly numbered crown). Brush to fix edges. You can also click each tooth yourself
+          (17 → 27, 47 → 37 with auto-advance).
         </div>
-        <Odontogram current={active} onPick={(id) => setState({ activeTooth: id, tool: tool === 'measure' ? 'seed' : tool })} mode="segment" />
+        <Odontogram current={missingMode ? null : active} onPick={(id) => (missingMode ? studio.toggleMissing(id) : setState({ activeTooth: id, tool: tool === 'measure' ? 'seed' : tool }))} mode="segment" />
         <div className="card">
           <div className="row between">
             <div>
@@ -90,8 +104,8 @@ export function SegmentPanel() {
 
       <div className="grow" />
       <div className="small muted">{teeth.length} teeth segmented</div>
-      <button className="primary" disabled={!teeth.length} onClick={() => goToStep('plan')}>
-        Continue to planning →
+      <button className="primary" disabled={!teeth.length} onClick={() => goToStep('axes')}>
+        Continue: check tooth axes →
       </button>
     </>
   );

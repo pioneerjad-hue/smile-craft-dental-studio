@@ -151,3 +151,7 @@ details summary { cursor: pointer; color: var(--muted); }
 .mv .lock { min-width: 22px; padding: 2px 4px; font-size: 11px; }
 .mv .lock.on { background: #78350f; border-color: var(--warn); }
 .mv.locked .name, .mv.locked input { opacity: .5; }
+.tooth-label { position: absolute; left: 0; top: 0; background: #0c4a6ecc; border: 1px solid var(--accent); color: #e0f2fe; font-weight: 700; font-size: 11px; padding: 0 5px; border-radius: 4px; }
+.tooth-btn.missing { background: transparent; color: var(--muted); text-decoration: line-through; border-style: dashed; }
+.nudge { display: grid; grid-template-columns: 1fr repeat(4, auto); gap: 4px 6px; align-items: center; }
+.nudge button { padding: 3px 7px; font-size: 12px; }

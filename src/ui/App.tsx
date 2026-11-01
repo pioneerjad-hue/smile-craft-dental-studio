@@ -7,6 +7,8 @@ import { Toast } from './common';
 import { Viewport } from './Viewport';
 import { ImportPanel } from './panels/ImportPanel';
 import { SegmentPanel } from './panels/SegmentPanel';
+import { OrientPanel } from './panels/OrientPanel';
+import { AxesPanel } from './panels/AxesPanel';
 import { PlanPanel, ToothInspector } from './panels/PlanPanel';
 import { StagePanel } from './panels/StagePanel';
 import { ProtocolPanel } from './panels/ProtocolPanel';
@@ -16,7 +18,9 @@ import { toast } from '../engine/store';
 
 const STEPS: [Step, string][] = [
   ['import', 'Case & scans'],
+  ['orient', 'Orient'],
   ['segment', 'Segment'],
+  ['axes', 'Axes'],
   ['plan', 'Plan'],
   ['stage', 'Stage & check'],
   ['protocol', 'Protocol & AI'],
@@ -24,9 +28,9 @@ const STEPS: [Step, string][] = [
 ];
 
 export function goToStep(step: Step) {
-  const tool = step === 'segment' ? 'seed' : step === 'import' ? 'orbit' : 'select';
-  setState({ step, tool, playing: false });
-  if (step === 'segment') setState({ stage: 0 });
+  const tool = step === 'segment' ? 'seed' : step === 'import' || step === 'orient' ? 'orbit' : 'select';
+  setState({ step, tool, playing: false, orientPoints: 0 });
+  if (step === 'segment' || step === 'orient' || step === 'axes') setState({ stage: 0 });
 }
 
 export function App() {
@@ -83,8 +87,9 @@ export function App() {
     };
   }, []);
 
-  const stepEnabled = (st: Step) => st === 'import' || (st === 'segment' ? hasScan : teeth.length > 0);
-  const stepDone = (st: Step) => (st === 'import' ? hasScan : st === 'segment' ? teeth.length > 0 : false);
+  const oriented = useStudio((s) => s.oriented);
+  const stepEnabled = (st: Step) => st === 'import' || (st === 'segment' || st === 'orient' ? hasScan : teeth.length > 0);
+  const stepDone = (st: Step) => (st === 'import' ? hasScan : st === 'orient' ? oriented : st === 'segment' ? teeth.length > 0 : false);
 
   const openProject = async (file: File) => {
     try {
@@ -142,7 +147,9 @@ export function App() {
       <div className="main">
         <aside className="side">
           {step === 'import' && <ImportPanel />}
+          {step === 'orient' && <OrientPanel />}
           {step === 'segment' && <SegmentPanel />}
+          {step === 'axes' && <AxesPanel />}
           {step === 'plan' && <PlanPanel />}
           {step === 'stage' && <StagePanel />}
           {step === 'protocol' && <ProtocolPanel />}

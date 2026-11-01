@@ -4,12 +4,15 @@ import { adjacentPairs, archOf, contactKey, sequence, toothNumber } from '../cor
 import { computeStaging, movementAtStage } from '../core/staging';
 import type { StagingToothInput } from '../core/staging';
 import { movementMatrix, v3 } from '../core/transform';
-import type { Attachment, ContactReport, Movement, Protocol, ToothFrame, ToothPlan, TreatmentPlan } from '../core/types';
+import type { Attachment, AxisCorrection, ContactReport, Issue, Movement, MovementKey, Protocol, ToothFrame, ToothPlan, TreatmentPlan } from '../core/types';
 import { isZeroMovement, zeroMovement } from '../core/types';
 import { suggestIpr, triggeredAttachmentRules, validatePlan } from '../core/validate';
 import { newAttachment } from '../core/aiBrief';
 import { constrainMovement } from '../core/constraints';
 import { buildModelBase, openEdgeCount } from '../geometry/modelBase';
+import { estimatePatientFrame, frameFromLandmarks, frameToMatrix } from '../geometry/orient';
+import { autoSeeds } from '../geometry/autoSegment';
+import { buildRootGeometry, segmentDistance } from '../geometry/roots';
 import type { ModelBase } from '../geometry/modelBase';
 import { archOcclusalNormal } from '../geometry/frames';
 import { ArchModel, seedRadiusMm } from '../geometry/archModel';
@@ -19,7 +22,7 @@ import { makeDemoArch } from '../geometry/demo';
 import { computeArchFrames, crownSamples } from '../geometry/frames';
 import { parseScan, writeBinaryStl } from '../geometry/io';
 import { COLORS, Viewer } from './viewer';
-import type { Hit, PatientAxes } from './viewer';
+import type { GizmoHandle, Hit, PatientAxes } from './viewer';
 import { emptyPlan, getState, setState, toast, useStudio } from './store';
 import type { View } from './store';
 
@@ -51,6 +54,15 @@ export class Studio {
   private playTimer: number | null = null;
   private pendingMeasure: Vector3 | null = null;
   private strokeSnapshot = false;
+  /** Scanner → patient coordinates (applied to every scan, saved with the project). */
+  orientation = new Matrix4();
+  private landmarks: Vector3[] = [];
+  private rootMeshes = new Map<number, Mesh>();
+  private rootMaterials: Record<Arch, MeshStandardMaterial> = {
+    upper: new MeshStandardMaterial({ color: 0xe8d9b5, roughness: 0.6 }),
+    lower: new MeshStandardMaterial({ color: 0xe8d9b5, roughness: 0.6 }),
+  };
+  private gizmoStart: { id: number; key: MovementKey; value: number } | null = null;
   onChange: () => void = () => {};
 
   constructor() {
@@ -64,10 +76,17 @@ export class Studio {
       if (s.selectedTooth !== prev.selectedTooth || s.step !== prev.step) {
         this.updateColors();
         this.updateAxes();
+        this.updateLabels();
+        this.viewer?.setGuides(s.step === 'orient');
+      }
+      if (s.frames !== prev.frames) {
+        this.rebuildRoots();
+        this.updateLabels();
       }
       if (s.settings !== prev.settings) this.applySettings(prev.settings.gingivaFlexMm !== s.settings.gingivaFlexMm);
       if (s.layers !== prev.layers) {
         this.applyLayers();
+        this.updateRootMeshes();
         const colorChanged = (['upperGum', 'upperTeeth', 'lowerGum', 'lowerTeeth'] as const).some((k) => s.layers[k].color !== prev.layers[k].color);
         if (colorChanged) this.updateColors();
       }
@@ -86,6 +105,8 @@ export class Studio {
     this.viewer = v;
     v.onClick = (hit, ev) => this.handleClick(hit, ev);
     v.onPaint = (hit, phase) => this.handlePaint(hit, phase);
+    v.onGizmo = (h, d, phase) => this.handleGizmo(h, d, phase);
+    v.setGuides(getState().step === 'orient');
     for (const arch of ARCHES) {
       const m = this.models[arch];
       if (m) v.setArchGeometry(arch, m.geometry, null);
@@ -93,6 +114,8 @@ export class Studio {
     this.rebuildGhosts();
     this.rebuildLayerIndices();
     this.rebuildBases();
+    this.rebuildRoots();
+    this.updateLabels();
     this.applySettings(false);
     this.applyTool();
     this.updateColors();
@@ -116,6 +139,7 @@ export class Studio {
     try {
       const geometry = parseScan(buffer, fileName);
       const model = new ArchModel(arch, geometry);
+      if (!isIdentity(this.orientation)) model.applyMatrix(this.orientation);
       if (saved?.labels && saved.labels.length === model.vertexCount) model.labels.set(saved.labels);
       if (saved?.seeds) model.seeds = saved.seeds.filter((s) => s.v < model.vertexCount);
       if (saved?.paint && saved.paint.length === model.vertexCount) model.paint = saved.paint;
@@ -163,7 +187,7 @@ export class Studio {
         this.resegment(arch);
       }
     }
-    setState((s) => ({ caseInfo: { ...s.caseInfo, patientName: s.caseInfo.patientName || 'Demo patient', caseId: s.caseInfo.caseId || 'DEMO-001' } }));
+    setState((s) => ({ oriented: true, missingTeeth: [18, 28, 38, 48], caseInfo: { ...s.caseInfo, patientName: s.caseInfo.patientName || 'Demo patient', caseId: s.caseInfo.caseId || 'DEMO-001' } }));
     this.afterSegmentation(true);
     this.setView('front');
   }
@@ -217,9 +241,28 @@ export class Studio {
       }
       return;
     }
+    if (s.tool === 'orientPoints' && hit) {
+      this.landmarks.push(hit.point.clone());
+      setState({ orientPoints: this.landmarks.length });
+      this.viewer?.setMeasurements([], hit.point);
+      if (this.landmarks.length === 3) {
+        const [inc, r, l] = this.landmarks;
+        this.landmarks = [];
+        const upHint = getState().oriented ? new Vector3(0, 0, 1) : this.estimateUp();
+        this.applyOrientation(frameToMatrix(frameFromLandmarks(inc, r, l, upHint)));
+        setState({ tool: 'orbit', orientPoints: 0 });
+        this.viewer?.setMeasurements([], null);
+        toast('Orientation set from landmarks.', 'success');
+      }
+      return;
+    }
     if (s.tool === 'seed' && hit) {
       const m = this.models[hit.arch]!;
       const tooth = s.activeTooth;
+      if (s.missingTeeth.includes(tooth)) {
+        toast(`${tooth} is marked missing — unmark it in the chart first.`, 'error');
+        return;
+      }
       if (archOf(tooth) !== hit.arch) {
         toast(`Tooth ${tooth} belongs to the ${archOf(tooth)} arch — click on that arch or pick another tooth.`, 'error');
         return;
@@ -227,6 +270,12 @@ export class Studio {
       this.pushSeg(hit.arch);
       const v = m.nearestVertexOfFace(hit.face, hit.point);
       if (!ev.shiftKey) m.seeds = m.seeds.filter((x) => x.tooth !== tooth);
+      // Clicking a crown that currently belongs to another tooth renumbers it.
+      const prevLabel = m.labels[v];
+      if (prevLabel && prevLabel !== tooth && !ev.shiftKey) {
+        m.seeds = m.seeds.filter((x) => x.tooth !== prevLabel);
+        toast(`This crown is now ${tooth} (was ${prevLabel}). Click the crown of ${prevLabel} if it is present.`, 'info');
+      }
       m.addSeed(v, tooth);
       this.resegment(hit.arch);
       this.afterSegmentation();
@@ -275,12 +324,12 @@ export class Studio {
   advanceActiveTooth() {
     const s = getState();
     const arch = archOf(s.activeTooth);
-    const seq = sequence(arch).filter((t) => toothNumber(t) !== 8);
+    const seq = sequence(arch);
     const segmented = new Set(this.models[arch]?.teeth() ?? []);
     const i = seq.indexOf(s.activeTooth);
     for (let k = 1; k < seq.length; k++) {
       const next = seq[(i + k) % seq.length];
-      if (!segmented.has(next)) {
+      if (!segmented.has(next) && !s.missingTeeth.includes(next)) {
         setState({ activeTooth: next });
         return;
       }
@@ -339,7 +388,7 @@ export class Studio {
     const frames: Record<number, ToothFrame> = {};
     for (const arch of ARCHES) {
       const m = this.models[arch];
-      if (m) Object.assign(frames, computeArchFrames(m, protocol));
+      if (m) Object.assign(frames, computeArchFrames(m, protocol, plan.teeth));
     }
     const teeth: Record<number, ToothPlan> = {};
     for (const id of Object.keys(frames).map(Number)) {
@@ -543,11 +592,41 @@ export class Studio {
   }
 
   recompute() {
-    const { protocol, plan, contacts, stage } = getState();
+    const { protocol, plan, contacts, stage, staging: prevStaging } = getState();
     const staging = computeStaging(protocol, this.stagingInputs());
     const issues = validatePlan(protocol, plan, staging, contacts ? contacts.filter((c) => c.stage > 0) : null);
-    setState({ staging, issues, stage: Math.min(stage, staging.totalStages) });
+    // keep showing the final position while the plan grows (e.g. while dragging the navigator)
+    const wasFinal = prevStaging !== null && stage >= prevStaging.totalStages && stage > 0;
+    setState({ staging, issues: [...issues, ...this.rootProximityIssues(staging.totalStages)], stage: wasFinal ? staging.totalStages : Math.min(stage, staging.totalStages) });
     this.applyStage();
+  }
+
+  /** Roots converging on each other (axis-to-axis clearance minus estimated root radii). */
+  private rootProximityIssues(total: number): Issue[] {
+    const { frames, plan } = getState();
+    if (total === 0) return [];
+    const T = this.transformsAt(total);
+    const out: Issue[] = [];
+    for (const arch of ARCHES) {
+      const present = (this.models[arch]?.teeth() ?? []).filter((t) => frames[t]?.apex && !plan.teeth[t]?.extracted);
+      for (const [a, b] of adjacentPairs(arch, present)) {
+        const seg = (id: number, m: Matrix4 | undefined) => {
+          const f = frames[id];
+          const top = v3(f.cervical!).addScaledVector(v3(f.occlusal), -2);
+          const ap = v3(f.apex!);
+          return m ? [top.applyMatrix4(m), ap.applyMatrix4(m)] : [top, ap];
+        };
+        const r = 0.28 * ((frames[a].autoWidthMm || 6) + (frames[b].autoWidthMm || 6));
+        const [a0, a1] = seg(a, undefined), [b0, b1] = seg(b, undefined);
+        const before = segmentDistance(a0, a1, b0, b1) - r;
+        const [c0, c1] = seg(a, T.get(a)), [d0, d1] = seg(b, T.get(b));
+        const after = segmentDistance(c0, c1, d0, d1) - r;
+        if (after < 0.3 && after < before - 0.2) {
+          out.push({ severity: 'warning', rule: 'ROOT-PROXIMITY', contact: contactKey(a, b), tooth: a, message: `Roots of ${a} and ${b} converge (estimated clearance ${after.toFixed(1)} mm at the end, ${before.toFixed(1)} mm initially). Check tip/torque.` });
+        }
+      }
+    }
+    return out;
   }
 
   transformsAt(stage: number, arch?: Arch): Map<number, Matrix4> {
@@ -574,6 +653,7 @@ export class Studio {
       v?.markGeometryChanged(arch);
     }
     this.updateAttachmentMeshes(stage);
+    this.updateRootMeshes(stage);
     this.updateAxes(stage);
     v?.requestRender();
   }
@@ -891,17 +971,55 @@ export class Studio {
   private updateAxes(stageOverride?: number) {
     const v = this.viewer;
     if (!v) return;
-    const { selectedTooth, frames, settings, step } = getState();
+    const { selectedTooth, frames, settings, step, plan } = getState();
     const stage = stageOverride ?? getState().stage;
-    if (!settings.showAxes || selectedTooth === null || !frames[selectedTooth] || step === 'segment' || step === 'import') {
-      v.setAxes([]);
-      return;
+    const T = this.transformsAt(stage);
+    const dir = (d: [number, number, number], m: Matrix4) => v3(d).transformDirection(m);
+    // Plan step: the 3D navigator on the selected tooth
+    const tp = selectedTooth !== null ? plan.teeth[selectedTooth] : undefined;
+    if (step === 'plan' && tp && frames[tp.id] && !tp.locked && !tp.extracted) {
+      const f = frames[tp.id];
+      const m = T.get(tp.id) ?? new Matrix4();
+      v.setGizmo({ origin: v3(f.centroid).applyMatrix4(m), mesial: v3(f.mesial), buccal: v3(f.buccal), occlusal: v3(f.occlusal) });
+    } else v.setGizmo(null);
+    // Axes step: every tooth's frame (selected tooth larger); other steps: none
+    if (step === 'axes' || (settings.showAxes && step !== 'plan' && step !== 'segment' && step !== 'import' && step !== 'orient' && selectedTooth !== null)) {
+      const ids = step === 'axes' ? Object.keys(frames).map(Number) : selectedTooth !== null && frames[selectedTooth] ? [selectedTooth] : [];
+      v.setAxes(
+        ids.map((id) => {
+          const f = frames[id];
+          const m = T.get(id) ?? new Matrix4();
+          const big = id === selectedTooth;
+          return {
+            origin: v3(f.centroid).applyMatrix4(m),
+            length: big ? 8 : 4.5,
+            dirs: [[dir(f.mesial, m), 0xef4444], [dir(f.buccal, m), 0x22c55e], [dir(f.occlusal, m), 0x3b82f6]] as [Vector3, number][],
+          };
+        }),
+      );
+    } else v.setAxes([]);
+  }
+
+  /** Tooth-number labels on the crowns (segmentation and axes steps). */
+  private updateLabels() {
+    const v = this.viewer;
+    if (!v) return;
+    const { step, frames } = getState();
+    if (step !== 'segment' && step !== 'axes') return v.setToothLabels([]);
+    const labels: { text: string; pos: Vector3 }[] = [];
+    for (const arch of ARCHES) {
+      const m = this.models[arch];
+      if (!m) continue;
+      const seen = new Set<number>();
+      for (const sd of m.seeds) {
+        if (seen.has(sd.tooth)) continue;
+        seen.add(sd.tooth);
+        const f = frames[sd.tooth];
+        const pos = f ? v3(f.centroid) : m.position(sd.v);
+        labels.push({ text: String(sd.tooth), pos });
+      }
     }
-    const f = frames[selectedTooth];
-    const T = this.transformsAt(stage).get(selectedTooth) ?? new Matrix4();
-    const origin = v3(f.centroid).applyMatrix4(T);
-    const dir = (d: [number, number, number]) => v3(d).transformDirection(T);
-    v.setAxes([{ origin, dirs: [[dir(f.mesial), 0xef4444], [dir(f.buccal), 0x22c55e], [dir(f.occlusal), 0x3b82f6]] }]);
+    v.setToothLabels(labels);
   }
 
   patientAxes(): PatientAxes {
@@ -916,6 +1034,7 @@ export class Studio {
     }
     let up = new Vector3(0, 0, 1);
     let anterior = new Vector3(0, 1, 0);
+    if (getState().oriented) return { center, up, anterior, right: new Vector3(1, 0, 0), size };
     const ids = Object.keys(frames).map(Number);
     const upperIds = ids.filter((i) => i < 30);
     const lowerIds = ids.filter((i) => i > 30);
@@ -942,12 +1061,184 @@ export class Studio {
     this.viewer?.setView(view, this.patientAxes());
   }
 
+  // ───────────────────────────── orientation ─────────────────────────────
+  private estimateUp(): Vector3 {
+    const arches = ARCHES.filter((a) => this.models[a]).map((arch) => ({ arch, model: this.models[arch]! }));
+    return arches.length ? estimatePatientFrame(arches).up : new Vector3(0, 0, 1);
+  }
+
+  /** Rigidly re-orient all scans together (bite preserved). */
+  applyOrientation(delta: Matrix4) {
+    for (const arch of ARCHES) {
+      const m = this.models[arch];
+      if (!m) continue;
+      m.applyMatrix(delta);
+      this.viewer?.markGeometryChanged(arch);
+    }
+    this.orientation.premultiply(delta);
+    setState({ oriented: true, measurements: [] });
+    this.afterSegmentation(true);
+    this.rebuildBases();
+    this.applyStage();
+    this.setView('front');
+  }
+
+  autoOrient() {
+    const arches = ARCHES.filter((a) => this.models[a]).map((arch) => ({ arch, model: this.models[arch]! }));
+    if (!arches.length) return;
+    this.applyOrientation(frameToMatrix(estimatePatientFrame(arches)));
+    toast('Scans oriented automatically: check the front, side and occlusal views.', 'success');
+  }
+
+  /** Fine rotation about a patient axis through the scan centre. */
+  nudgeOrientation(axis: 'x' | 'y' | 'z', degrees: number) {
+    const box = this.viewer?.bounds();
+    const c = box && !box.isEmpty() ? box.getCenter(new Vector3()) : new Vector3();
+    const R = new Matrix4().makeRotationAxis(new Vector3(axis === 'x' ? 1 : 0, axis === 'y' ? 1 : 0, axis === 'z' ? 1 : 0), (degrees * Math.PI) / 180);
+    const delta = new Matrix4().makeTranslation(c.x, c.y, c.z).multiply(R).multiply(new Matrix4().makeTranslation(-c.x, -c.y, -c.z));
+    const view = this.viewer ? { pos: this.viewer.camera.position.clone(), up: this.viewer.camera.up.clone(), target: this.viewer.controls.target.clone() } : null;
+    for (const arch of ARCHES) {
+      const m = this.models[arch];
+      if (m) (m.applyMatrix(delta), this.viewer?.markGeometryChanged(arch));
+    }
+    this.orientation.premultiply(delta);
+    setState({ oriented: true });
+    this.afterSegmentation(true);
+    this.rebuildBases();
+    this.applyStage();
+    if (view && this.viewer) {
+      // keep the camera still so the rotation is visible against the guides
+      this.viewer.camera.position.copy(view.pos);
+      this.viewer.camera.up.copy(view.up);
+      this.viewer.controls.target.copy(view.target);
+      this.viewer.controls.update();
+    }
+  }
+
+  resetOrientation() {
+    this.applyOrientation(this.orientation.clone().invert());
+    setState({ oriented: false });
+  }
+
+  startLandmarks() {
+    this.landmarks = [];
+    setState({ tool: 'orientPoints', orientPoints: 0 });
+  }
+
+  // ───────────────────────────── auto segmentation & axes ─────────────────────────────
+  toggleMissing(id: number) {
+    const { missingTeeth } = getState();
+    const missing = missingTeeth.includes(id) ? missingTeeth.filter((t) => t !== id) : [...missingTeeth, id];
+    setState({ missingTeeth: missing });
+    if (missing.includes(id) && this.models[archOf(id)]?.teeth().includes(id)) this.clearTooth(id);
+  }
+
+  autoSegment() {
+    if (!getState().oriented) this.autoOrient();
+    const { missingTeeth } = getState();
+    let n = 0;
+    for (const arch of ARCHES) {
+      const m = this.models[arch];
+      if (!m) continue;
+      this.pushSeg(arch);
+      const present = sequence(arch).filter((t) => !missingTeeth.includes(t));
+      m.seeds = autoSeeds(m, arch, present);
+      m.paint = new Uint8Array(m.vertexCount).fill(255);
+      this.resegment(arch);
+      n += m.seeds.length;
+    }
+    this.afterSegmentation();
+    toast(`${n} teeth found. Check the numbers on the crowns; click a crown to fix its number, brush to fix edges.`, 'success');
+  }
+
+  setAxisCorrection(id: number, corr: AxisCorrection) {
+    this.updateTooth(id, { axisCorrection: corr });
+    this.recomputeFrames();
+  }
+
+  setRootLength(id: number, mm: number | undefined) {
+    this.updateTooth(id, { rootLengthMm: mm });
+    this.recomputeFrames();
+  }
+
+  // ───────────────────────────── navigator ─────────────────────────────
+  private handleGizmo(h: GizmoHandle, delta: number, phase: 'start' | 'move' | 'end') {
+    const { selectedTooth, plan, staging } = getState();
+    if (selectedTooth === null) return;
+    const tp = plan.teeth[selectedTooth];
+    if (!tp) return;
+    if (phase === 'start') {
+      this.pushPlan();
+      this.gizmoStart = { id: selectedTooth, key: h.key, value: tp.movement[h.key] };
+      if (staging) setState({ stage: Math.max(1, staging.totalStages) });
+      return;
+    }
+    if (phase === 'end' || !this.gizmoStart) {
+      this.gizmoStart = null;
+      return;
+    }
+    const step = h.kind === 'translate' ? 0.05 : 0.5;
+    const raw = h.kind === 'translate' ? delta : (delta * 180) / Math.PI;
+    const value = this.gizmoStart.value + Math.round(raw / step) * step;
+    if (Math.abs(value - tp.movement[h.key]) > 1e-9) this.setMovement(selectedTooth, { [h.key]: value }, false);
+  }
+
+  // ───────────────────────────── roots ─────────────────────────────
+  rebuildRoots() {
+    for (const mesh of this.rootMeshes.values()) {
+      this.viewer?.scene.remove(mesh);
+      mesh.geometry.dispose();
+    }
+    this.rootMeshes.clear();
+    const { frames } = getState();
+    for (const f of Object.values(frames)) {
+      const m = this.models[archOf(f.id)];
+      if (!m) continue;
+      const g = buildRootGeometry(m, f);
+      if (!g) continue;
+      const mesh = new Mesh(g, this.rootMaterials[archOf(f.id)]);
+      mesh.matrixAutoUpdate = false;
+      mesh.userData.tooth = f.id;
+      this.rootMeshes.set(f.id, mesh);
+      this.viewer?.scene.add(mesh);
+    }
+    this.updateRootMeshes();
+  }
+
+  private updateRootMeshes(stageOverride?: number) {
+    const { layers, settings, plan } = getState();
+    const stage = stageOverride ?? getState().stage;
+    for (const arch of ARCHES) {
+      const st = layers[arch === 'upper' ? 'upperRoots' : 'lowerRoots'];
+      const mat = this.rootMaterials[arch];
+      mat.color.set(st.color);
+      const transparent = st.opacity < 0.999;
+      if (mat.transparent !== transparent) mat.needsUpdate = true;
+      mat.transparent = transparent;
+      mat.opacity = st.opacity;
+      mat.depthWrite = !transparent;
+    }
+    const T = this.transformsAt(stage);
+    for (const mesh of this.rootMeshes.values()) {
+      const id = mesh.userData.tooth as number;
+      const arch = archOf(id);
+      const st = layers[arch === 'upper' ? 'upperRoots' : 'lowerRoots'];
+      mesh.visible = st.visible && (arch === 'upper' ? settings.showUpper : settings.showLower) && !plan.teeth[id]?.extracted;
+      mesh.matrix.copy(T.get(id) ?? new Matrix4());
+      mesh.matrixWorldNeedsUpdate = true;
+    }
+    this.viewer?.requestRender();
+  }
+
   // ───────────────────────────── reset ─────────────────────────────
   resetCase() {
     for (const arch of ARCHES) this.viewer?.setArchGeometry(arch, null, null);
     this.models = {};
     this.raw = {};
     this.bases = {};
+    this.orientation = new Matrix4();
+    for (const mesh of this.rootMeshes.values()) this.viewer?.scene.remove(mesh);
+    this.rootMeshes.clear();
     this.clearAttachmentMeshes();
     this.bodies.clear();
     this.samples.clear();
@@ -965,9 +1256,15 @@ export class Studio {
       selectedTooth: null,
       measurements: [],
       aiRationale: null,
+      oriented: false,
     });
     this.rebuildGhosts();
   }
 }
 
 export const studio = new Studio();
+
+function isIdentity(m: Matrix4): boolean {
+  const id = new Matrix4().elements;
+  return m.elements.every((v, i) => Math.abs(v - id[i]) < 1e-12);
+}
