@@ -46,6 +46,7 @@ header b{font-size:16px}header .muted{color:var(--muted)}
 .bar{position:absolute;left:10px;right:10px;display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
 .bar.top{top:10px}.bar.bottom{bottom:10px;align-items:center;background:#0d1628e6;border:1px solid var(--line);border-radius:12px;padding:8px}
 .bar.bottom input{flex:1;min-width:120px;accent-color:var(--accent)}
+.bar.bottom button{padding:6px 9px}
 .stage{min-width:120px;text-align:center;font-variant-numeric:tabular-nums}
 aside{border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:14px;display:flex;flex-direction:column;gap:14px}
 h3{margin:0 0 6px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
@@ -58,7 +59,7 @@ td:first-child,th:first-child{text-align:left}th{color:var(--muted);font-weight:
 .modal.open{display:flex}.box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;max-width:520px;width:100%;display:flex;flex-direction:column;gap:10px}
 textarea,input[type=text]{width:100%;background:#0a1324;border:1px solid var(--line);border-radius:8px;color:var(--text);padding:8px;font:inherit}
 .note{color:var(--muted);font-size:12px}
-@media (max-width:820px){.app{grid-template-columns:1fr;grid-template-rows:auto 60vh auto}aside{border-left:0;border-top:1px solid var(--line)}}
+@media (max-width:820px){#first,#last{display:none}.app{grid-template-columns:1fr;grid-template-rows:auto 60vh auto}aside{border-left:0;border-top:1px solid var(--line)}}
 `;
 
 function b64ToBytes(b64: string): Uint8Array {
@@ -118,8 +119,13 @@ function main() {
         <button id="tU" class="on">U</button><button id="tL" class="on">L</button><button id="tG">Initial</button>
       </div>
       <div class="bar bottom">
-        <button id="play">▶</button>
-        <input id="slider" type="range" min="0" max="${total}" step="0.02" value="0">
+        <button id="first" title="Initial (Home)">⏮</button>
+        <button id="prev" title="Previous aligner (←)">◀</button>
+        <button id="play" title="Play (Space)">▶</button>
+        <button id="next" title="Next aligner (→)">▶|</button>
+        <button id="last" title="Final (End)">⏭</button>
+        <input id="slider" type="range" min="0" max="${total}" step="0.02" value="0" list="ticks">
+        <datalist id="ticks">${Array.from({ length: total + 1 }, (_, i) => `<option value="${i}"></option>`).join('')}</datalist>
         <span class="stage" id="label">Initial</span>
         <button id="video" title="Download an MP4 simulation (all views, every aligner)">🎬 Video</button>
       </div>
@@ -485,11 +491,38 @@ function main() {
     stage = +slider.value;
     apply(stage);
   };
-  document.getElementById('play')!.onclick = (e) => {
-    playing = !playing;
-    (e.target as HTMLElement).textContent = playing ? '⏸' : '▶';
+  const playBtn = document.getElementById('play')!;
+  const setPlaying = (p: boolean) => {
+    playing = p;
+    playBtn.textContent = playing ? '⏸' : '▶';
     if (playing && stage >= total) stage = 0;
   };
+  playBtn.onclick = () => setPlaying(!playing);
+  /** Jump to a whole aligner stage (stops playback). */
+  const goTo = (st: number) => {
+    setPlaying(false);
+    stage = Math.max(0, Math.min(total, st));
+    slider.value = String(stage);
+    apply(stage);
+  };
+  document.getElementById('first')!.onclick = () => goTo(0);
+  document.getElementById('last')!.onclick = () => goTo(total);
+  document.getElementById('prev')!.onclick = () => goTo(Math.ceil(stage - 1e-6) - 1);
+  document.getElementById('next')!.onclick = () => goTo(Math.floor(stage + 1e-6) + 1);
+  // releasing the slider snaps to the nearest aligner
+  slider.onchange = () => goTo(Math.round(+slider.value));
+  window.addEventListener('keydown', (e) => {
+    if ((e.target as HTMLElement).tagName === 'TEXTAREA' || (e.target as HTMLElement).tagName === 'INPUT' && (e.target as HTMLInputElement).type === 'text') return;
+    if (e.key === 'ArrowRight' || e.key === ']') goTo(Math.floor(stage + 1e-6) + 1);
+    else if (e.key === 'ArrowLeft' || e.key === '[') goTo(Math.ceil(stage - 1e-6) - 1);
+    else if (e.key === 'Home') goTo(0);
+    else if (e.key === 'End') goTo(total);
+    else if (e.key === ' ') {
+      e.preventDefault();
+      setPlaying(!playing);
+    } else return;
+    e.preventDefault();
+  });
   let last = performance.now();
   const loop = (t: number) => {
     const dt = (t - last) / 1000;
@@ -498,10 +531,7 @@ function main() {
       stage = Math.min(total, stage + dt * Math.max(2, total / 6));
       slider.value = String(stage);
       apply(stage);
-      if (stage >= total) {
-        playing = false;
-        document.getElementById('play')!.textContent = '▶';
-      }
+      if (stage >= total) setPlaying(false);
     }
     renderer.render(scene, camera);
     requestAnimationFrame(loop);
