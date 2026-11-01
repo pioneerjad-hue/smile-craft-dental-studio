@@ -24,12 +24,27 @@ function loadMesh(arch: Arch, mesh: FoundMesh, fileName: string) {
 /** Open a Maestro 3D .m3d project: auto-assign arches when the names say so, otherwise let the user pick. */
 function M3dImport() {
   const input = useRef<HTMLInputElement>(null);
-  const [found, setFound] = useState<{ file: string; meshes: FoundMesh[]; diagnostics: string } | null>(null);
+  const [found, setFound] = useState<{ file: string; meshes: FoundMesh[]; diagnostics: string; encrypted?: boolean; teeth?: number[] } | null>(null);
   const open = async (file: File) => {
     setState({ busy: `Reading ${file.name}…` });
     await new Promise((r) => setTimeout(r, 0));
     try {
       const r = readM3d(await file.arrayBuffer(), file.name);
+      // fill empty case fields from the project's readable details
+      const ci = useStudio.getState().caseInfo;
+      setState({
+        caseInfo: {
+          ...ci,
+          patientName: ci.patientName || r.info.patientName || '',
+          clinician: ci.clinician || r.info.doctorName || '',
+          notes: ci.notes || (r.info.date ? `Maestro case dated ${r.info.date}` : ''),
+        },
+      });
+      if (r.encrypted) {
+        setFound({ file: file.name, meshes: [], diagnostics: r.diagnostics, encrypted: true, teeth: r.info.teeth });
+        toast('This Maestro project stores its 3D models encrypted — export STL from Maestro (see below).', 'error');
+        return;
+      }
       if (!r.meshes.length) {
         setFound({ file: file.name, meshes: [], diagnostics: r.diagnostics });
         toast('No 3D models recognised in this .m3d file yet — see the fingerprint below.', 'error');
@@ -80,7 +95,19 @@ function M3dImport() {
           ))}
         </div>
       )}
-      {found && found.meshes.length === 0 && (
+      {found?.encrypted && (
+        <div className="card small">
+          <b>Case details imported. The 3D models inside this .m3d are encrypted by Maestro</b> and can only be
+          opened in Maestro itself.
+          {found.teeth && <div style={{ marginTop: 4 }}>The project contains a segmented setup for teeth {found.teeth.join(', ')}.</div>}
+          <div style={{ marginTop: 6 }}>In Maestro, export:</div>
+          <ol style={{ margin: '4px 0 0 16px', padding: 0 }}>
+            <li>the upper and lower jaw models as STL (or PLY/OBJ), then drop them in the boxes above;</li>
+            <li>for a finished setup: the final-stage models (and, if you want, every stage) as STL, so they can be compared or used as a reference.</li>
+          </ol>
+        </div>
+      )}
+      {found && !found.encrypted && found.meshes.length === 0 && (
         <div className="card small">
           <b>Not recognised yet.</b> Please send this .m3d file (or this fingerprint) so support for its exact
           structure can be added:

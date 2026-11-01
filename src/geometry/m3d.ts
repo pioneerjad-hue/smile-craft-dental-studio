@@ -9,6 +9,11 @@ import { parseScan } from './io';
  * zlib streams) that wrap standard meshes, so this reader searches the file for any STL / PLY / OBJ
  * data: zip entries, compressed streams, and meshes embedded at any offset. When nothing is found it
  * returns a diagnostic fingerprint so support for the real structure can be added from a sample file.
+ *
+ * Current Maestro projects (checked on a real file) are zip archives whose model entries
+ * (*.m3d_mesh) and setup data are encrypted. Those cannot — and must not — be decrypted outside Maestro;
+ * the reader then reports `encrypted` and the readable case details, and the user exports STL from
+ * Maestro instead.
  */
 export interface FoundMesh {
   name: string;
@@ -20,6 +25,10 @@ export interface FoundMesh {
 export interface ProbeResult {
   meshes: FoundMesh[];
   diagnostics: string;
+  /** Maestro project whose models are stored encrypted (cannot be read outside Maestro). */
+  encrypted: boolean;
+  /** Plain-text case details found in the project (info.xml / case.xml). */
+  info: { patientName?: string; doctorName?: string; date?: string; teeth?: number[] };
 }
 
 const MIN_TRIANGLES = 500; // ignore tiny fragments (icons, attachments, previews)
@@ -58,8 +67,23 @@ function sniffMesh(b: Uint8Array, name: string, out: FoundMesh[]): boolean {
   return false;
 }
 
+/** Shannon entropy (bits/byte) of the first 64 KB: ~8.0 means encrypted or compressed data. */
+function entropy(b: Uint8Array): number {
+  const n = Math.min(b.length, 65536);
+  const c = new Uint32Array(256);
+  for (let i = 0; i < n; i++) c[b[i]]++;
+  let e = 0;
+  for (const v of c) if (v) e -= (v / n) * Math.log2(v / n);
+  return e;
+}
+
 function probe(b: Uint8Array, name: string, out: FoundMesh[], log: string[], depth: number) {
   if (depth > 3 || b.length < 16) return;
+  // Maestro mesh entries are encrypted: do not scan them for embedded streams (false positives).
+  if (/\.m3d_(mesh|x)$/i.test(name) && entropy(b) > 7.9) {
+    log.push(`${name}: encrypted (${b.length} bytes)`);
+    return;
+  }
   // zip container
   if (b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04) {
     try {
@@ -116,11 +140,40 @@ function probe(b: Uint8Array, name: string, out: FoundMesh[], log: string[], dep
   }
 }
 
+const xmlText = (xml: string, tag: string) => xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`))?.[1]?.trim() ?? '';
+
 export function readM3d(buffer: ArrayBuffer, fileName: string): ProbeResult {
   const b = new Uint8Array(buffer);
   const log: string[] = [];
   const meshes: FoundMesh[] = [];
   probe(b, fileName.replace(/\.m3d$/i, ''), meshes, log, 0);
+  // Plain-text case details and the list of teeth present in the project
+  const info: ProbeResult['info'] = {};
+  let encrypted = false;
+  if (b[0] === 0x50 && b[1] === 0x4b) {
+    try {
+      const files = unzipSync(b);
+      const names = Object.keys(files);
+      encrypted = meshes.length === 0 && names.some((n) => /\.m3d_mesh$/i.test(n));
+      const dec = new TextDecoder();
+      const infoXml = Object.entries(files).find(([n]) => /(^|\/)info\.xml$/i.test(n))?.[1];
+      if (infoXml) {
+        const x = dec.decode(infoXml);
+        info.patientName = [xmlText(x, 'PatientName'), xmlText(x, 'PatientSurname')].filter(Boolean).join(' ') || undefined;
+        info.doctorName = [xmlText(x, 'DoctorName'), xmlText(x, 'DoctorSurname')].filter(Boolean).join(' ') || undefined;
+      }
+      const caseXml = Object.entries(files).find(([n]) => /(^|\/)case\.xml$/i.test(n))?.[1];
+      if (caseXml) {
+        const x = dec.decode(caseXml);
+        const d = xmlText(x, 'Day'), m = xmlText(x, 'Month'), y = xmlText(x, 'Year');
+        if (d && m && y) info.date = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+      }
+      const teeth = names.map((n) => n.match(/_tooth_(\d{2})\.m3d_mesh$/i)?.[1]).filter(Boolean).map(Number);
+      if (teeth.length) info.teeth = [...new Set(teeth)].sort((p, q) => p - q);
+    } catch {
+      /* not a readable zip */
+    }
+  }
   // drop duplicates (same triangle count from the same stream)
   const seen = new Set<string>();
   const unique = meshes.filter((m) => {
@@ -132,5 +185,5 @@ export function readM3d(buffer: ArrayBuffer, fileName: string): ProbeResult {
   const hex = Array.from(b.subarray(0, 32), (x) => x.toString(16).padStart(2, '0')).join(' ');
   const txt = ascii(b, 0, 32).replace(/[^\x20-\x7e]/g, '.');
   const diagnostics = [`file: ${fileName} (${(b.length / 1048576).toFixed(2)} MB)`, `first bytes: ${hex}`, `as text: ${txt}`, ...log.slice(0, 20)].join('\n');
-  return { meshes: unique.sort((a, b2) => b2.triangles - a.triangles), diagnostics };
+  return { meshes: unique.sort((a, b2) => b2.triangles - a.triangles), diagnostics, encrypted, info };
 }

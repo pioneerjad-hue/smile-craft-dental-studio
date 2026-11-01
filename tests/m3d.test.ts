@@ -35,3 +35,21 @@ describe('.m3d reader (container probing)', () => {
     expect(r.diagnostics).toContain('first bytes: 07 07');
   });
 });
+
+describe('encrypted Maestro projects', () => {
+  it('recognises encrypted mesh entries and reads the plain case details', () => {
+    let seed = 1;
+    const noise = (n: number) => new Uint8Array(n).map(() => ((seed = (seed * 16807) % 2147483647) & 255));
+    const file = zipSync({
+      'case.xml': strToU8('<CASE><Date><Day>3</Day><Month>4</Month><Year>2026</Year></Date></CASE>'),
+      'info.xml': strToU8('<UserProfile><PatientName>Test</PatientName><PatientSurname>Patient</PatientSurname><DoctorName>Jo</DoctorName><DoctorSurname>Doe</DoctorSurname></UserProfile>'),
+      'lowerjaw.m3d_mesh': noise(70000),
+      'setup/lower/lowerjaw_tooth_31.m3d_mesh': noise(4096),
+      'setup/lower/lowerjaw_tooth_41.m3d_mesh': noise(4096),
+    });
+    const r = readM3d(file.buffer as ArrayBuffer, 'x.m3d');
+    expect(r.meshes.length).toBe(0);
+    expect(r.encrypted).toBe(true);
+    expect(r.info).toEqual({ patientName: 'Test Patient', doctorName: 'Jo Doe', date: '2026-04-03', teeth: [31, 41] });
+  });
+});
