@@ -1,0 +1,515 @@
+import { BufferAttribute, BufferGeometry, Matrix4, Vector3 } from 'three';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import type { Arch } from '../core/fdi';
+
+/**
+ * One scanned arch. The mesh topology is never cut: each vertex carries a tooth label (FDI number,
+ * 0 = gingiva). Staged models are produced by moving tooth vertices rigidly and blending nearby
+ * gingiva vertices, so every exported stage keeps the original scan's watertightness.
+ */
+export class ArchModel {
+  readonly arch: Arch;
+  readonly geometry: BufferGeometry;
+  readonly base: Float32Array;
+  readonly index: Uint32Array;
+  readonly vertexCount: number;
+  readonly faceCount: number;
+  readonly normals: Float32Array;
+  readonly adjOffsets: Uint32Array;
+  readonly adj: Uint32Array;
+  readonly boundary: Uint8Array;
+  readonly curvature: Float32Array;
+  readonly meanEdge: number;
+  labels: Uint8Array;
+
+  private toothVertexCache = new Map<number, Uint32Array>();
+  private gingiva: { vtx: Uint32Array; tooth: Uint8Array; w: Float32Array } | null = null;
+  gingivaRadiusMm = 3;
+
+  constructor(arch: Arch, source: BufferGeometry) {
+    this.arch = arch;
+    const g = source.clone();
+    for (const name of Object.keys(g.attributes)) if (name !== 'position') g.deleteAttribute(name);
+    const merged = g.index ? g : mergeVertices(g, 1e-4);
+    this.geometry = merged;
+    const pos = merged.getAttribute('position') as BufferAttribute;
+    this.vertexCount = pos.count;
+    this.base = new Float32Array(pos.array as ArrayLike<number>);
+    if (!(pos.array instanceof Float32Array)) {
+      merged.setAttribute('position', new BufferAttribute(new Float32Array(this.base), 3));
+    }
+    this.index = new Uint32Array(merged.index!.array as ArrayLike<number>);
+    merged.setIndex(new BufferAttribute(this.index, 1));
+    this.faceCount = this.index.length / 3;
+    this.labels = new Uint8Array(this.vertexCount);
+    merged.computeVertexNormals();
+    this.normals = new Float32Array(merged.getAttribute('normal').array as ArrayLike<number>);
+
+    // Vertex adjacency (CSR) and open-boundary detection.
+    const deg = new Uint32Array(this.vertexCount);
+    const idx = this.index;
+    for (let f = 0; f < idx.length; f += 3) {
+      deg[idx[f]] += 2;
+      deg[idx[f + 1]] += 2;
+      deg[idx[f + 2]] += 2;
+    }
+    this.adjOffsets = new Uint32Array(this.vertexCount + 1);
+    for (let i = 0; i < this.vertexCount; i++) this.adjOffsets[i + 1] = this.adjOffsets[i] + deg[i];
+    this.adj = new Uint32Array(this.adjOffsets[this.vertexCount]);
+    const fill = new Uint32Array(this.vertexCount);
+    const push = (a: number, b: number) => {
+      this.adj[this.adjOffsets[a] + fill[a]++] = b;
+    };
+    const edgeCount = new Map<number, number>();
+    const n = this.vertexCount;
+    let edgeSum = 0;
+    for (let f = 0; f < idx.length; f += 3) {
+      const a = idx[f];
+      const b = idx[f + 1];
+      const c = idx[f + 2];
+      push(a, b), push(a, c), push(b, a), push(b, c), push(c, a), push(c, b);
+      for (const [u, v] of [
+        [a, b],
+        [b, c],
+        [c, a],
+      ]) {
+        const key = u < v ? u * n + v : v * n + u;
+        edgeCount.set(key, (edgeCount.get(key) ?? 0) + 1);
+      }
+      edgeSum += this.dist(a, b);
+    }
+    this.meanEdge = edgeSum / Math.max(1, this.faceCount);
+    this.boundary = new Uint8Array(n);
+    for (const [key, count] of edgeCount) {
+      if (count === 1) {
+        this.boundary[Math.floor(key / n)] = 1;
+        this.boundary[key % n] = 1;
+      }
+    }
+    this.curvature = this.computeCurvature();
+  }
+
+  private dist(a: number, b: number): number {
+    const p = this.base;
+    return Math.hypot(p[3 * a] - p[3 * b], p[3 * a + 1] - p[3 * b + 1], p[3 * a + 2] - p[3 * b + 2]);
+  }
+
+  /**
+   * Signed mean-curvature estimate per vertex (1/mm): positive = concave (valleys such as the
+   * gingival margin, interproximal embrasures and fissures), negative = convex.
+   */
+  private computeCurvature(): Float32Array {
+    const n = this.vertexCount;
+    const p = this.base;
+    const nr = this.normals;
+    let k = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      if (this.boundary[i]) continue;
+      const s = this.adjOffsets[i];
+      const e = this.adjOffsets[i + 1];
+      if (e === s) continue;
+      let mx = 0, my = 0, mz = 0, l2 = 0;
+      for (let j = s; j < e; j++) {
+        const v = this.adj[j];
+        const dx = p[3 * v] - p[3 * i], dy = p[3 * v + 1] - p[3 * i + 1], dz = p[3 * v + 2] - p[3 * i + 2];
+        mx += dx; my += dy; mz += dz;
+        l2 += dx * dx + dy * dy + dz * dz;
+      }
+      const cnt = e - s;
+      const d = (mx * nr[3 * i] + my * nr[3 * i + 1] + mz * nr[3 * i + 2]) / cnt;
+      k[i] = (2 * d) / (l2 / cnt);
+    }
+    // Smooth twice to suppress scanner noise.
+    for (let it = 0; it < 2; it++) {
+      const out = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const s = this.adjOffsets[i];
+        const e = this.adjOffsets[i + 1];
+        let sum = k[i];
+        for (let j = s; j < e; j++) sum += k[this.adj[j]];
+        out[i] = sum / (e - s + 1);
+      }
+      k = out;
+    }
+    return k;
+  }
+
+  position(i: number, out = new Vector3()): Vector3 {
+    return out.fromArray(this.base, 3 * i);
+  }
+
+  /** Nearest vertex of a face to a point (used to turn a raycast hit into a seed vertex). */
+  nearestVertexOfFace(face: number, point: Vector3): number {
+    let best = this.index[3 * face];
+    let bd = Infinity;
+    const v = new Vector3();
+    for (let k = 0; k < 3; k++) {
+      const vi = this.index[3 * face + k];
+      const d = this.position(vi, v).distanceToSquared(point);
+      if (d < bd) {
+        bd = d;
+        best = vi;
+      }
+    }
+    return best;
+  }
+
+  /** Click seeds placed by the clinician (one or more per tooth). */
+  seeds: { v: number; tooth: number }[] = [];
+  /** Brush strokes: 255 = none, 0 = forced gingiva, n = forced tooth n. */
+  paint: Uint8Array = new Uint8Array(0);
+
+  private ensurePaint() {
+    if (this.paint.length !== this.vertexCount) this.paint = new Uint8Array(this.vertexCount).fill(255);
+  }
+
+  /**
+   * Add a click seed. The seed snaps to the most convex vertex within ~1.5 mm so that a click that
+   * lands in a fissure or groove still floods the whole crown.
+   */
+  addSeed(v: number, tooth: number, snapMm = 1.5): number {
+    const best = this.snapToConvex(v, snapMm);
+    this.seeds.push({ v: best, tooth });
+    return best;
+  }
+
+  private snapToConvex(v: number, radiusMm: number): number {
+    const center = this.position(v);
+    const near = this.brushVertices(v, center, radiusMm);
+    let best = v;
+    for (const i of near) if (this.curvature[i] < this.curvature[best]) best = i;
+    return best;
+  }
+
+  /** Brush: force vertices to a tooth (or gingiva with 0). */
+  paintVertices(verts: number[], value: number): void {
+    this.ensurePaint();
+    for (const v of verts) this.paint[v] = value;
+  }
+
+  removeToothSeeds(tooth: number): void {
+    this.seeds = this.seeds.filter((s) => s.tooth !== tooth);
+    this.ensurePaint();
+    for (let i = 0; i < this.vertexCount; i++) if (this.paint[i] === tooth) this.paint[i] = 255;
+  }
+
+  /**
+   * Competitive watershed segmentation. Every tooth seed and the gingiva (scan border, vertices out of
+   * reach of any tooth seed, and brushed gingiva) flood the surface in order of concavity; regions meet
+   * along the deepest valleys: gingival margins and interproximal embrasures. Enclosed fissures belong to
+   * the tooth that surrounds them. Brush strokes are hard constraints.
+   * `tightness` (1/mm) raises the cost for teeth to cross a valley: positive = tighter crowns (less
+   * papilla leakage), negative = crowns grow further toward the gum.
+   */
+  segment(radiusFor: (tooth: number) => number, tightness = 0): void {
+    this.ensurePaint();
+    const n = this.vertexCount;
+    const out = new Int16Array(n).fill(-1);
+    const elev = this.curvature;
+    const heap = new MinHeap(n * 2);
+    const p = this.base;
+    const seeds = this.seeds.filter((s) => s.v < n);
+    // Gingiva seeds: border, out-of-reach vertices.
+    for (let i = 0; i < n; i++) {
+      if (this.paint[i] !== 255) {
+        out[i] = this.paint[i];
+        continue;
+      }
+      let reachable = false;
+      for (const s of seeds) {
+        const r = radiusFor(s.tooth);
+        const dx = p[3 * i] - p[3 * s.v], dy = p[3 * i + 1] - p[3 * s.v + 1], dz = p[3 * i + 2] - p[3 * s.v + 2];
+        if (dx * dx + dy * dy + dz * dz <= r * r) {
+          reachable = true;
+          break;
+        }
+      }
+      if (!reachable || this.boundary[i]) out[i] = 0;
+    }
+    for (const s of seeds) if (this.paint[s.v] === 255) out[s.v] = s.tooth;
+    for (let i = 0; i < n; i++) {
+      if (out[i] < 0) continue;
+      for (let j = this.adjOffsets[i]; j < this.adjOffsets[i + 1]; j++) {
+        const v = this.adj[j];
+        if (out[v] < 0) heap.push(elev[v] + (out[i] === 0 ? 0 : tightness), v, out[i]);
+      }
+    }
+    while (heap.size) {
+      const { key, v, label } = heap.pop();
+      if (out[v] >= 0) continue;
+      out[v] = label;
+      for (let j = this.adjOffsets[v]; j < this.adjOffsets[v + 1]; j++) {
+        const nb = this.adj[j];
+        if (out[nb] < 0) heap.push(Math.max(key, elev[nb] + (label === 0 ? 0 : tightness)), nb, label);
+      }
+    }
+    for (let i = 0; i < n; i++) this.labels[i] = out[i] < 0 ? 0 : out[i];
+    this.invalidate();
+  }
+
+  /** Vertices within a radius of a point, connected to the seed vertex over the surface. */
+  brushVertices(seed: number, center: Vector3, radiusMm: number): number[] {
+    const r2 = radiusMm * radiusMm;
+    const out: number[] = [];
+    const seen = new Set<number>([seed]);
+    const stack = [seed];
+    const v = new Vector3();
+    while (stack.length) {
+      const i = stack.pop()!;
+      if (this.position(i, v).distanceToSquared(center) > r2) continue;
+      out.push(i);
+      for (let j = this.adjOffsets[i]; j < this.adjOffsets[i + 1]; j++) {
+        const nb = this.adj[j];
+        if (!seen.has(nb)) {
+          seen.add(nb);
+          stack.push(nb);
+        }
+      }
+    }
+    return out;
+  }
+
+  invalidate(): void {
+    this.toothVertexCache.clear();
+    this.gingiva = null;
+  }
+
+  teeth(): number[] {
+    const seen = new Set<number>();
+    for (let i = 0; i < this.vertexCount; i++) if (this.labels[i]) seen.add(this.labels[i]);
+    return [...seen];
+  }
+
+  toothVertices(toothId: number): Uint32Array {
+    let cached = this.toothVertexCache.get(toothId);
+    if (!cached) {
+      const list: number[] = [];
+      for (let i = 0; i < this.vertexCount; i++) if (this.labels[i] === toothId) list.push(i);
+      cached = new Uint32Array(list);
+      this.toothVertexCache.set(toothId, cached);
+    }
+    return cached;
+  }
+
+  /** Faces whose three vertices belong to the tooth. */
+  toothFaces(toothId: number): number[] {
+    const out: number[] = [];
+    const L = this.labels;
+    const idx = this.index;
+    for (let f = 0; f < this.faceCount; f++) {
+      if (L[idx[3 * f]] === toothId && L[idx[3 * f + 1]] === toothId && L[idx[3 * f + 2]] === toothId) out.push(f);
+    }
+    return out;
+  }
+
+  /** Stand-alone crown geometry (initial position) for collision and attachment placement. */
+  toothGeometry(toothId: number): BufferGeometry {
+    const faces = this.toothFaces(toothId);
+    const remap = new Map<number, number>();
+    const pos: number[] = [];
+    const index: number[] = [];
+    for (const f of faces) {
+      for (let k = 0; k < 3; k++) {
+        const v = this.index[3 * f + k];
+        let m = remap.get(v);
+        if (m === undefined) {
+          m = remap.size;
+          remap.set(v, m);
+          pos.push(this.base[3 * v], this.base[3 * v + 1], this.base[3 * v + 2]);
+        }
+        index.push(m);
+      }
+    }
+    const g = new BufferGeometry();
+    g.setAttribute('position', new BufferAttribute(new Float32Array(pos), 3));
+    g.setIndex(index);
+    g.computeVertexNormals();
+    return g;
+  }
+
+  /** Area-weighted crown centroid and sample points. */
+  toothStats(toothId: number) {
+    const faces = this.toothFaces(toothId);
+    const c = new Vector3();
+    let area = 0;
+    const a = new Vector3(), b = new Vector3(), d = new Vector3(), e1 = new Vector3(), e2 = new Vector3();
+    for (const f of faces) {
+      this.position(this.index[3 * f], a);
+      this.position(this.index[3 * f + 1], b);
+      this.position(this.index[3 * f + 2], d);
+      const ar = e1.subVectors(b, a).cross(e2.subVectors(d, a)).length() / 2;
+      c.addScaledVector(a.add(b).add(d), ar / 3);
+      area += ar;
+    }
+    const verts = this.toothVertices(toothId);
+    if (area > 0) c.multiplyScalar(1 / area);
+    else if (verts.length) {
+      for (const v of verts) c.add(this.position(v, a));
+      c.multiplyScalar(1 / verts.length);
+    }
+    return { centroid: c, area, vertices: verts };
+  }
+
+  /** Precompute gingiva blending weights near every tooth's margin. */
+  private ensureGingivaWeights(): void {
+    if (this.gingiva) return;
+    const n = this.vertexCount;
+    const R = this.gingivaRadiusMm;
+    const L = this.labels;
+    const p = this.base;
+    const dist = new Float32Array(n).fill(Infinity);
+    const src = new Int32Array(n).fill(-1);
+    const entries: { v: number; t: number; w: number }[] = [];
+    const sumW = new Float32Array(n);
+    const settled = new Uint8Array(n);
+    const heap = new MinHeap(1024);
+    for (const t of this.teeth()) {
+      // Dijkstra over gingiva vertices; key = Euclidean distance to the nearest margin vertex of
+      // tooth t reached through the gum surface (each vertex settled once).
+      const touched: number[] = [];
+      for (const v of this.toothVertices(t)) {
+        for (let j = this.adjOffsets[v]; j < this.adjOffsets[v + 1]; j++) {
+          const g = this.adj[j];
+          if (L[g] !== 0) continue;
+          const d = Math.hypot(p[3 * g] - p[3 * v], p[3 * g + 1] - p[3 * v + 1], p[3 * g + 2] - p[3 * v + 2]);
+          if (d < dist[g]) {
+            if (dist[g] === Infinity) touched.push(g);
+            dist[g] = d;
+            src[g] = v;
+            heap.push(d, g, 0);
+          }
+        }
+      }
+      while (heap.size) {
+        const { key, v: i } = heap.pop();
+        if (settled[i] || key > dist[i] + 1e-9) continue;
+        settled[i] = 1;
+        const s0 = src[i];
+        for (let j = this.adjOffsets[i]; j < this.adjOffsets[i + 1]; j++) {
+          const g = this.adj[j];
+          if (L[g] !== 0 || settled[g]) continue;
+          const d = Math.hypot(p[3 * g] - p[3 * s0], p[3 * g + 1] - p[3 * s0 + 1], p[3 * g + 2] - p[3 * s0 + 2]);
+          if (d < R && d < dist[g]) {
+            if (dist[g] === Infinity) touched.push(g);
+            dist[g] = d;
+            src[g] = s0;
+            heap.push(d, g, 0);
+          }
+        }
+      }
+      for (const g of touched) {
+        const x = Math.min(1, dist[g] / R);
+        const w = (1 - x) * (1 - x) * (1 + 2 * x); // smooth falloff, 1 at the margin, 0 at R
+        if (w > 1e-4) {
+          entries.push({ v: g, t, w });
+          sumW[g] += w;
+        }
+        dist[g] = Infinity;
+        src[g] = -1;
+        settled[g] = 0;
+      }
+    }
+    const vtx = new Uint32Array(entries.length);
+    const tooth = new Uint8Array(entries.length);
+    const w = new Float32Array(entries.length);
+    entries.forEach((e, i) => {
+      vtx[i] = e.v;
+      tooth[i] = e.t;
+      w[i] = sumW[e.v] > 1 ? e.w / sumW[e.v] : e.w;
+    });
+    this.gingiva = { vtx, tooth, w };
+  }
+
+  /** Compute deformed vertex positions for a set of rigid tooth transforms. */
+  deformedPositions(transforms: Map<number, Matrix4>, out?: Float32Array): Float32Array {
+    const pos = out ?? new Float32Array(this.base.length);
+    pos.set(this.base);
+    if (transforms.size === 0) return pos;
+    this.ensureGingivaWeights();
+    const v = new Vector3();
+    for (const [t, m] of transforms) {
+      for (const i of this.toothVertices(t)) {
+        v.fromArray(this.base, 3 * i).applyMatrix4(m);
+        pos[3 * i] = v.x;
+        pos[3 * i + 1] = v.y;
+        pos[3 * i + 2] = v.z;
+      }
+    }
+    const g = this.gingiva!;
+    for (let k = 0; k < g.vtx.length; k++) {
+      const m = transforms.get(g.tooth[k]);
+      if (!m) continue;
+      const i = g.vtx[k];
+      v.fromArray(this.base, 3 * i).applyMatrix4(m);
+      pos[3 * i] += g.w[k] * (v.x - this.base[3 * i]);
+      pos[3 * i + 1] += g.w[k] * (v.y - this.base[3 * i + 1]);
+      pos[3 * i + 2] += g.w[k] * (v.z - this.base[3 * i + 2]);
+    }
+    return pos;
+  }
+
+  /** Apply transforms to the live geometry. */
+  deform(transforms: Map<number, Matrix4>): void {
+    const attr = this.geometry.getAttribute('position') as BufferAttribute;
+    this.deformedPositions(transforms, attr.array as Float32Array);
+    attr.needsUpdate = true;
+    this.geometry.computeVertexNormals();
+    this.geometry.computeBoundingSphere();
+  }
+}
+
+/** Binary min-heap of (key, vertex, label) used by the watershed. */
+class MinHeap {
+  private keys: Float64Array;
+  private verts: Uint32Array;
+  private labs: Int16Array;
+  size = 0;
+  constructor(capacity: number) {
+    this.keys = new Float64Array(capacity);
+    this.verts = new Uint32Array(capacity);
+    this.labs = new Int16Array(capacity);
+  }
+  private grow() {
+    const k = new Float64Array(this.keys.length * 2); k.set(this.keys); this.keys = k;
+    const v = new Uint32Array(this.verts.length * 2); v.set(this.verts); this.verts = v;
+    const l = new Int16Array(this.labs.length * 2); l.set(this.labs); this.labs = l;
+  }
+  push(key: number, v: number, label: number) {
+    if (this.size === this.keys.length) this.grow();
+    let i = this.size++;
+    const K = this.keys, V = this.verts, L = this.labs;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (K[parent] <= key) break;
+      K[i] = K[parent]; V[i] = V[parent]; L[i] = L[parent];
+      i = parent;
+    }
+    K[i] = key; V[i] = v; L[i] = label;
+  }
+  pop(): { key: number; v: number; label: number } {
+    const K = this.keys, V = this.verts, L = this.labs;
+    const top = { key: K[0], v: V[0], label: L[0] };
+    const last = --this.size;
+    if (last > 0) {
+      const key = K[last], v = V[last], lab = L[last];
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1;
+        if (l >= last) break;
+        const r = l + 1;
+        const c = r < last && K[r] < K[l] ? r : l;
+        if (K[c] >= key) break;
+        K[i] = K[c]; V[i] = V[c]; L[i] = L[c];
+        i = c;
+      }
+      K[i] = key; V[i] = v; L[i] = lab;
+    }
+    return top;
+  }
+}
+
+/** Reach of a click seed: farthest crown point from a click on the occlusal/incisal surface (mm). */
+export function seedRadiusMm(tooth: number, scale = 1): number {
+  const r = [11, 10, 11.5, 9, 9, 9.5, 9.5, 9][(tooth % 10) - 1] ?? 10;
+  return r * scale;
+}
