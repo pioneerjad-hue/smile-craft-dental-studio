@@ -122,7 +122,7 @@ export const useStudio = create<StudioState>(() => ({
     showGhost: false,
     showAxes: true,
     showAttachments: true,
-    gingivaFlexMm: 3,
+    gingivaFlexMm: 4,
   },
   measurements: [],
   busy: null,

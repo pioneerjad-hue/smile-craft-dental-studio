@@ -73,7 +73,10 @@ export function App() {
         } else if (e.key === 'Escape') setState({ selectedTooth: null, tool: s.step === 'segment' ? 'seed' : 'select' });
         else if (e.key.toLowerCase() === 'm') setState({ tool: s.tool === 'measure' ? 'select' : 'measure' });
         else if (e.key.toLowerCase() === 'g') setState({ settings: { ...s.settings, showGhost: !s.settings.showGhost } });
-        else if (e.key.toLowerCase() === 'u') setState({ settings: { ...s.settings, showUpper: !s.settings.showUpper } });
+        else if (e.key.toLowerCase() === 'r' && s.teeth.length) {
+          const on = !(s.layers.upperRoots.visible || s.layers.lowerRoots.visible);
+          setState({ layers: { ...s.layers, upperRoots: { ...s.layers.upperRoots, visible: on }, lowerRoots: { ...s.layers.lowerRoots, visible: on } } });
+        } else if (e.key.toLowerCase() === 'u') setState({ settings: { ...s.settings, showUpper: !s.settings.showUpper } });
         else if (e.key.toLowerCase() === 'l') setState({ settings: { ...s.settings, showLower: !s.settings.showLower } });
         else if (s.step === 'segment' && e.key.toLowerCase() === 'b') setState({ tool: 'brushAdd' });
         else if (s.step === 'segment' && e.key.toLowerCase() === 'e') setState({ tool: 'brushErase' });

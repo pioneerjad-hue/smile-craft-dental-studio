@@ -43,7 +43,7 @@ function archCurve(arch: Arch) {
   const front = arch === 'upper' ? 27 : 24.5;
   const k = arch === 'upper' ? 0.043 : 0.05;
   const pts: [number, number][] = [];
-  for (let x = -34; x <= 34.001; x += 0.1) pts.push([x, front - k * x * x]);
+  for (let x = -38; x <= 38.001; x += 0.1) pts.push([x, front - k * x * x]);
   return pts;
 }
 
@@ -96,7 +96,9 @@ function heightAt(x: number, y: number, curve: [number, number][], teeth: DemoTo
     if (dd < d2) d2 = dd;
   }
   const d = Math.sqrt(d2);
-  let z = 2 + 5 * Math.exp(-((d / 5.5) ** 2));
+  // Alveolar ridge: convex over the roots (like attached gingiva), meeting the flat vestibule
+  // floor in a concave fold about 9 mm from the tooth row.
+  let z = d < 9 ? 2 + 5 * (1 - (d / 9) ** 2) : 2;
   for (const t of teeth) {
     const dx = x - t.cx, dy = y - t.cy;
     if (dx * dx + dy * dy > 64) continue;
@@ -118,11 +120,13 @@ export interface DemoArch {
   teeth: { id: number; x: number; y: number; top: number }[];
 }
 
-export function makeDemoArch(arch: Arch, step = 0.2): DemoArch {
+export function makeDemoArch(arch: Arch, step = 0.2, noiseMm = 0): DemoArch {
+  let seed = arch === 'upper' ? 7 : 11;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
   const curve = archCurve(arch);
   const teeth = placeTeeth(arch);
-  const x0 = -33, x1 = 33;
-  const y0 = arch === 'upper' ? -18 : -19, y1 = arch === 'upper' ? 36 : 33;
+  const x0 = -37, x1 = 37;
+  const y0 = arch === 'upper' ? -26 : -21, y1 = arch === 'upper' ? 36 : 33;
   const nx = Math.round((x1 - x0) / step) + 1;
   const ny = Math.round((y1 - y0) / step) + 1;
   const z = new Float32Array(nx * ny);
@@ -144,7 +148,7 @@ export function makeDemoArch(arch: Arch, step = 0.2): DemoArch {
     const k = j * nx + i;
     if (remap[k] < 0) {
       remap[k] = pos.length / 3;
-      const h = z[k];
+      const h = z[k] + (noiseMm ? noiseMm * rand() : 0);
       if (arch === 'lower') pos.push(x0 + i * step, y0 + j * step, h);
       else pos.push(x0 + i * step, y0 + j * step, 28.5 - h);
     }

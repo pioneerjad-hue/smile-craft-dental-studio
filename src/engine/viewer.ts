@@ -56,6 +56,8 @@ export interface GizmoHandle {
 }
 
 export interface GizmoSpec {
+  /** 'move' = arrows + rings (tooth movement); 'axes' = rings only (axis orientation). */
+  mode?: 'move' | 'axes';
   origin: Vector3;
   mesial: Vector3;
   buccal: Vector3;
@@ -79,7 +81,7 @@ export class Viewer {
   /** Full-arch meshes used for picking only (never drawn). */
   readonly archMeshes: Record<Arch, Mesh | null> = { upper: null, lower: null };
   /** Drawn layers per arch; gum and teeth share the arch's vertex buffers. */
-  readonly layerMeshes: Record<Arch, { gum: Mesh; teeth: Mesh; base: Mesh | null } | null> = { upper: null, lower: null };
+  readonly layerMeshes: Record<Arch, { gum: Mesh; teeth: Mesh; seam: Mesh; base: Mesh | null } | null> = { upper: null, lower: null };
   private layerMaterials = new Map<string, MeshStandardMaterial>();
   private pickMaterial = new MeshBasicMaterial({ visible: false });
   readonly ghostMeshes: Record<Arch, Mesh | null> = { upper: null, lower: null };
@@ -213,7 +215,7 @@ export class Viewer {
     }
     const oldLayers = this.layerMeshes[arch];
     if (oldLayers) {
-      for (const m of [oldLayers.gum, oldLayers.teeth, oldLayers.base]) if (m) this.scene.remove(m);
+      for (const m of [oldLayers.gum, oldLayers.teeth, oldLayers.seam, oldLayers.base]) if (m) this.scene.remove(m);
     }
     const oldGhost = this.ghostMeshes[arch];
     if (oldGhost) this.scene.remove(oldGhost);
@@ -238,11 +240,14 @@ export class Viewer {
       const all = Array.from(geometry.index!.array as ArrayLike<number>);
       const gum = new Mesh(shared(all), this.layerMaterial(`${arch}Gum`));
       const teeth = new Mesh(shared([]), this.layerMaterial(`${arch}Teeth`));
-      for (const m of [gum, teeth]) {
+      // Faces bridging two teeth (scanner-fused contacts): drawn in gum colour so a contact that
+      // opens during treatment looks like interdental papilla, not a stretched tooth sheet.
+      const seam = new Mesh(shared([]), this.layerMaterial(`${arch}Seam`, false));
+      for (const m of [gum, teeth, seam]) {
         m.frustumCulled = false;
         this.scene.add(m);
       }
-      this.layerMeshes[arch] = { gum, teeth, base: null };
+      this.layerMeshes[arch] = { gum, teeth, seam, base: null };
     }
     if (ghostGeometry) {
       const ghost = new Mesh(ghostGeometry, this.ghostMaterial);
@@ -255,11 +260,12 @@ export class Viewer {
   }
 
   /** Split the arch into gum and teeth layers (face index lists). */
-  setLayerIndex(arch: Arch, gum: Uint32Array, teeth: Uint32Array) {
+  setLayerIndex(arch: Arch, gum: Uint32Array, teeth: Uint32Array, seam: Uint32Array = new Uint32Array(0)) {
     const l = this.layerMeshes[arch];
     if (!l) return;
     l.gum.geometry.setIndex(new BufferAttribute(gum, 1));
     l.teeth.geometry.setIndex(new BufferAttribute(teeth, 1));
+    l.seam.geometry.setIndex(new BufferAttribute(seam, 1));
     this.requestRender();
   }
 
@@ -284,6 +290,7 @@ export class Viewer {
       if (!l) continue;
       const parts: [Mesh | null, string][] = [
         [l.gum, `${arch}Gum`],
+        [l.seam, `${arch}Gum`],
         [l.teeth, `${arch}Teeth`],
         [l.base, `${arch}Base`],
       ];
@@ -298,6 +305,7 @@ export class Viewer {
         mat.opacity = style.opacity;
         mat.depthWrite = !transparent;
         if (!mat.vertexColors) mat.color.set(style.color);
+        if (mesh === l.seam) mesh.visible = mesh.visible && (layers[`${arch}Teeth`]?.visible ?? true);
         mesh.renderOrder = transparent ? 2 : 0;
       }
     }
@@ -639,10 +647,8 @@ export class Viewer {
       g.userData.handle = { kind: 'rotate', key, axis: axis.clone().normalize() } satisfies GizmoHandle;
       return g;
     };
+    if (spec.mode !== 'axes') this.gizmo.add(arrow(M, 0xef4444, 'mesial'), arrow(B, 0x22c55e, 'buccal'), arrow(O, 0x3b82f6, 'extrusion'));
     this.gizmo.add(
-      arrow(M, 0xef4444, 'mesial'),
-      arrow(B, 0x22c55e, 'buccal'),
-      arrow(O, 0x3b82f6, 'extrusion'),
       ring(new Vector3().crossVectors(B, M), 0x22d3ee, 'rotation', 5),
       ring(new Vector3().crossVectors(O, M), 0xf59e0b, 'tip', 5.8),
       ring(new Vector3().crossVectors(O, B), 0xa78bfa, 'torque', 6.6),

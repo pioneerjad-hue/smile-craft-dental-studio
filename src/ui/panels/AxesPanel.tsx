@@ -37,7 +37,8 @@ export function AxesPanel() {
         <div className="hint">
           Each tooth gets a long axis from its crown shape (blue), a mesial axis along the arch (red) and a buccal axis
           (green). Every movement in the plan uses these axes, so check them before planning. Roots are templates built
-          on the long axis using your protocol's root lengths.
+          on the long axis using your protocol's root lengths. Select a tooth and drag the rings to rotate its axes
+          (orange tip, violet torque, cyan rotation), or use the buttons.
         </div>
         <button onClick={toggleGum}>{seeThrough ? 'Opaque gum, hide roots' : 'See-through gum + show roots'}</button>
       </div>

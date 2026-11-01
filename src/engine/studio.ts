@@ -11,11 +11,11 @@ import { newAttachment } from '../core/aiBrief';
 import { constrainMovement } from '../core/constraints';
 import { buildModelBase, openEdgeCount } from '../geometry/modelBase';
 import { estimatePatientFrame, frameFromLandmarks, frameToMatrix } from '../geometry/orient';
-import { autoSeeds } from '../geometry/autoSegment';
+import { autoSegmentSeeds } from '../geometry/autoSegment';
 import { buildRootGeometry, segmentDistance } from '../geometry/roots';
 import type { ModelBase } from '../geometry/modelBase';
 import { archOcclusalNormal } from '../geometry/frames';
-import { ArchModel, seedRadiusMm } from '../geometry/archModel';
+import { ArchModel, crownHeightLimitMm, seedRadiusMm } from '../geometry/archModel';
 import { attachmentGeometry } from '../geometry/attachments';
 import { ToothBody, contactDistance } from '../geometry/contacts';
 import { makeDemoArch } from '../geometry/demo';
@@ -63,6 +63,7 @@ export class Studio {
     lower: new MeshStandardMaterial({ color: 0xe8d9b5, roughness: 0.6 }),
   };
   private gizmoStart: { id: number; key: MovementKey; value: number } | null = null;
+  private axisDrag: { id: number; key: 'tip' | 'torque' | 'rotation'; start: AxisCorrection; axis: Vector3; delta: number } | null = null;
   onChange: () => void = () => {};
 
   constructor() {
@@ -83,7 +84,10 @@ export class Studio {
         this.rebuildRoots();
         this.updateLabels();
       }
-      if (s.settings !== prev.settings) this.applySettings(prev.settings.gingivaFlexMm !== s.settings.gingivaFlexMm);
+      if (s.settings !== prev.settings) {
+        this.applySettings(prev.settings.gingivaFlexMm !== s.settings.gingivaFlexMm);
+        if (s.settings.showUpper !== prev.settings.showUpper || s.settings.showLower !== prev.settings.showLower) this.updateLabels();
+      }
       if (s.layers !== prev.layers) {
         this.applyLayers();
         this.updateRootMeshes();
@@ -198,7 +202,9 @@ export class Studio {
   resegment(arch: Arch) {
     const m = this.models[arch];
     if (!m) return;
-    m.segment(this.segRadius, getState().settings.segTightness);
+    // occlusal direction of this arch: patient up/down after orientation, otherwise estimated
+    const up = getState().oriented ? new Vector3(0, 0, arch === 'lower' ? 1 : -1) : archOcclusalNormal(m, []);
+    m.segment(this.segRadius, getState().settings.segTightness, { up, limitFor: crownHeightLimitMm });
   }
 
   resegmentAll() {
@@ -837,11 +843,15 @@ export class Studio {
       if (!m) continue;
       const gum: number[] = [];
       const teeth: number[] = [];
+      const seam: number[] = [];
+      const L = m.labels;
       for (let f = 0; f < m.faceCount; f++) {
         const a = m.index[3 * f], b = m.index[3 * f + 1], c = m.index[3 * f + 2];
-        (m.labels[a] && m.labels[b] && m.labels[c] ? teeth : gum).push(a, b, c);
+        if (!(L[a] && L[b] && L[c])) gum.push(a, b, c);
+        else if (L[a] === L[b] && L[b] === L[c]) teeth.push(a, b, c);
+        else seam.push(a, b, c);
       }
-      v.setLayerIndex(arch, new Uint32Array(gum), new Uint32Array(teeth));
+      v.setLayerIndex(arch, new Uint32Array(gum), new Uint32Array(teeth), new Uint32Array(seam));
     }
     this.applyLayers();
   }
@@ -974,13 +984,21 @@ export class Studio {
     const { selectedTooth, frames, settings, step, plan } = getState();
     const stage = stageOverride ?? getState().stage;
     const T = this.transformsAt(stage);
-    const dir = (d: [number, number, number], m: Matrix4) => v3(d).transformDirection(m);
+    // live preview while dragging an axis ring: rotate the selected tooth's axes
+    const preview = this.axisDrag ? new Matrix4().makeRotationAxis(this.axisDrag.axis, this.axisDrag.delta) : null;
+    const dir = (d: [number, number, number], m: Matrix4, id?: number) => {
+      const out = v3(d).transformDirection(m);
+      return preview && id === this.axisDrag?.id ? out.transformDirection(preview) : out;
+    };
     // Plan step: the 3D navigator on the selected tooth
     const tp = selectedTooth !== null ? plan.teeth[selectedTooth] : undefined;
     if (step === 'plan' && tp && frames[tp.id] && !tp.locked && !tp.extracted) {
       const f = frames[tp.id];
       const m = T.get(tp.id) ?? new Matrix4();
       v.setGizmo({ origin: v3(f.centroid).applyMatrix4(m), mesial: v3(f.mesial), buccal: v3(f.buccal), occlusal: v3(f.occlusal) });
+    } else if (step === 'axes' && selectedTooth !== null && frames[selectedTooth]) {
+      const f = frames[selectedTooth];
+      v.setGizmo({ mode: 'axes', origin: v3(f.centroid), mesial: dir(f.mesial, new Matrix4(), f.id), buccal: dir(f.buccal, new Matrix4(), f.id), occlusal: dir(f.occlusal, new Matrix4(), f.id) });
     } else v.setGizmo(null);
     // Axes step: every tooth's frame (selected tooth larger); other steps: none
     if (step === 'axes' || (settings.showAxes && step !== 'plan' && step !== 'segment' && step !== 'import' && step !== 'orient' && selectedTooth !== null)) {
@@ -993,7 +1011,7 @@ export class Studio {
           return {
             origin: v3(f.centroid).applyMatrix4(m),
             length: big ? 8 : 4.5,
-            dirs: [[dir(f.mesial, m), 0xef4444], [dir(f.buccal, m), 0x22c55e], [dir(f.occlusal, m), 0x3b82f6]] as [Vector3, number][],
+            dirs: [[dir(f.mesial, m, id), 0xef4444], [dir(f.buccal, m, id), 0x22c55e], [dir(f.occlusal, m, id), 0x3b82f6]] as [Vector3, number][],
           };
         }),
       );
@@ -1004,12 +1022,12 @@ export class Studio {
   private updateLabels() {
     const v = this.viewer;
     if (!v) return;
-    const { step, frames } = getState();
+    const { step, frames, settings } = getState();
     if (step !== 'segment' && step !== 'axes') return v.setToothLabels([]);
     const labels: { text: string; pos: Vector3 }[] = [];
     for (const arch of ARCHES) {
       const m = this.models[arch];
-      if (!m) continue;
+      if (!m || !(arch === 'upper' ? settings.showUpper : settings.showLower)) continue;
       const seen = new Set<number>();
       for (const sd of m.seeds) {
         if (seen.has(sd.tooth)) continue;
@@ -1142,10 +1160,12 @@ export class Studio {
       if (!m) continue;
       this.pushSeg(arch);
       const present = sequence(arch).filter((t) => !missingTeeth.includes(t));
-      m.seeds = autoSeeds(m, arch, present);
+      const auto = autoSegmentSeeds(m, arch, present);
+      m.seeds = auto.teeth;
       m.paint = new Uint8Array(m.vertexCount).fill(255);
+      for (const v of auto.gum) m.paint[v] = 0;
       this.resegment(arch);
-      n += m.seeds.length;
+      n += new Set(m.seeds.map((x) => x.tooth)).size;
     }
     this.afterSegmentation();
     toast(`${n} teeth found. Check the numbers on the crowns; click a crown to fix its number, brush to fix edges.`, 'success');
@@ -1163,8 +1183,25 @@ export class Studio {
 
   // ───────────────────────────── navigator ─────────────────────────────
   private handleGizmo(h: GizmoHandle, delta: number, phase: 'start' | 'move' | 'end') {
-    const { selectedTooth, plan, staging } = getState();
+    const { selectedTooth, plan, staging, step } = getState();
     if (selectedTooth === null) return;
+    if (step === 'axes') {
+      if (h.kind !== 'rotate' || (h.key !== 'tip' && h.key !== 'torque' && h.key !== 'rotation')) return;
+      if (phase === 'start') {
+        this.axisDrag = { id: selectedTooth, key: h.key, start: plan.teeth[selectedTooth]?.axisCorrection ?? { tip: 0, torque: 0, rotation: 0 }, axis: h.axis.clone(), delta: 0 };
+      } else if (phase === 'move' && this.axisDrag) {
+        const deg = Math.round(((delta * 180) / Math.PI) / 0.5) * 0.5;
+        this.axisDrag.delta = (deg * Math.PI) / 180;
+        this.updateAxes();
+      } else if (phase === 'end' && this.axisDrag) {
+        const d = this.axisDrag;
+        this.axisDrag = null;
+        const deg = Math.round(((d.delta * 180) / Math.PI) / 0.5) * 0.5;
+        if (deg !== 0) this.setAxisCorrection(d.id, { ...d.start, [d.key]: d.start[d.key] + deg });
+        else this.updateAxes();
+      }
+      return;
+    }
     const tp = plan.teeth[selectedTooth];
     if (!tp) return;
     if (phase === 'start') {
@@ -1177,9 +1214,9 @@ export class Studio {
       this.gizmoStart = null;
       return;
     }
-    const step = h.kind === 'translate' ? 0.05 : 0.5;
+    const inc = h.kind === 'translate' ? 0.05 : 0.5;
     const raw = h.kind === 'translate' ? delta : (delta * 180) / Math.PI;
-    const value = this.gizmoStart.value + Math.round(raw / step) * step;
+    const value = this.gizmoStart.value + Math.round(raw / inc) * inc;
     if (Math.abs(value - tp.movement[h.key]) > 1e-9) this.setMovement(selectedTooth, { [h.key]: value }, false);
   }
 

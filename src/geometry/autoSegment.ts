@@ -8,6 +8,12 @@ export const MEAN_WIDTH: Record<Arch, number[]> = {
   lower: [5.4, 5.9, 6.9, 7.0, 7.1, 11.0, 10.5, 10.0],
 };
 
+/** Typical half bucco-lingual crown thickness (mm) by tooth number 1–8. */
+const HALF_BL: Record<Arch, number[]> = {
+  upper: [3.6, 3.3, 4.2, 4.6, 4.6, 5.5, 5.3, 5.2],
+  lower: [3.0, 3.1, 3.9, 4.0, 4.2, 5.2, 5.0, 5.0],
+};
+
 /**
  * Automatic seed placement for tooth segmentation on an oriented arch
  * (+X patient right, +Y anterior, +Z up).
@@ -19,8 +25,17 @@ export const MEAN_WIDTH: Record<Arch, number[]> = {
  * The watershed then grows every seed into a crown; any mistake is corrected by clicking.
  */
 export function autoSeeds(model: ArchModel, arch: Arch, present: number[]): { tooth: number; v: number }[] {
+  return autoSegmentSeeds(model, arch, present).teeth;
+}
+
+/**
+ * Tooth seeds plus certain-gingiva seeds. Gum seeds are vertices well buccal/lingual of the tooth row
+ * (≥ 8.5 mm from the crown-top arch curve) and well below the crown tops, so the gingiva floods the
+ * papillae from close by instead of having to climb over the vestibular fold first.
+ */
+export function autoSegmentSeeds(model: ArchModel, arch: Arch, present: number[]): { teeth: { tooth: number; v: number }[]; gum: number[] } {
   const teeth = sequence(arch).filter((t) => present.includes(t));
-  if (!teeth.length) return [];
+  if (!teeth.length) return { teeth: [], gum: [] };
   const n = model.vertexCount;
   const P = model.base;
   const sign = arch === 'lower' ? 1 : -1;
@@ -34,15 +49,25 @@ export function autoSeeds(model: ArchModel, arch: Arch, present: number[]): { to
   const hTop = pct(0.85);
   for (let i = 0; i < n; i++) if (h[i] >= hTop) topIdx.push(i);
   const coef = fitEvenQuartic(topIdx.map((i) => [P[3 * i], P[3 * i + 1]]));
-  let xmin = Infinity, xmax = -Infinity;
-  for (const i of topIdx) (xmin = Math.min(xmin, P[3 * i])), (xmax = Math.max(xmax, P[3 * i]));
+  let xmin = Infinity, xmax = -Infinity, ymin = Infinity;
+  for (const i of topIdx) (xmin = Math.min(xmin, P[3 * i])), (xmax = Math.max(xmax, P[3 * i])), (ymin = Math.min(ymin, P[3 * i + 1]));
+  const f = (x: number) => coef[0] + coef[1] * x * x + coef[2] * x ** 4;
   const curve: { x: number; y: number; s: number }[] = [];
-  // walk from patient right (+x) to left (−x) so arc length follows the FDI sequence
-  for (let x = xmax + 3, s = 0, prev: [number, number] | null = null; x >= xmin - 3; x -= 0.2) {
-    const y = coef[0] + coef[1] * x * x + coef[2] * x ** 4;
-    if (prev) s += Math.hypot(x - prev[0], y - prev[1]);
-    curve.push({ x, y, s });
-    prev = [x, y];
+  // Walk from patient right (+x) to left (−x) so arc length follows the FDI sequence. Steps are
+  // adaptive (≤ 0.2 mm of arc), and the curve extends past the last molars where the arch runs
+  // almost straight back.
+  {
+    let x = xmax + 12, s = 0, prev: [number, number] | null = null;
+    while (x >= xmin - 12) {
+      const y = f(x);
+      if (y >= ymin - 6) {
+        if (prev) s += Math.hypot(x - prev[0], y - prev[1]);
+        curve.push({ x, y, s });
+        prev = [x, y];
+      }
+      const slope = Math.abs(coef[1] * 2 * x + coef[2] * 4 * x ** 3);
+      x -= 0.2 / Math.sqrt(1 + slope * slope);
+    }
   }
 
   // 2. project crown-band vertices onto the curve
@@ -50,13 +75,13 @@ export function autoSeeds(model: ArchModel, arch: Arch, present: number[]): { to
   const bin = 0.25;
   const nBins = Math.ceil(curve[curve.length - 1].s / bin) + 1;
   const prof = new Float32Array(nBins).fill(-Infinity);
-  const near: { i: number; s: number; d: number }[] = [];
+  const near: { i: number; s: number; d: number; side: number }[] = [];
   for (let i = 0; i < n; i++) {
     if (h[i] < band) continue;
     const x = P[3 * i], y = P[3 * i + 1];
     // coarse-to-fine nearest curve point
     let best = 0, bd = Infinity;
-    for (let k = 0; k < curve.length; k += 10) {
+    for (let k = 0; k < curve.length; k += 8) {
       const d = (curve[k].x - x) ** 2 + (curve[k].y - y) ** 2;
       if (d < bd) (bd = d), (best = k);
     }
@@ -67,14 +92,18 @@ export function autoSeeds(model: ArchModel, arch: Arch, present: number[]): { to
     const d = Math.sqrt(bd);
     if (d > 5) continue;
     const s = curve[best].s;
-    near.push({ i, s, d });
+    // signed side of the curve: + = buccal (away from the arch centre)
+    const k2 = Math.min(curve.length - 1, best + 1), k1 = Math.max(0, best - 1);
+    const tx = curve[k2].x - curve[k1].x, ty = curve[k2].y - curve[k1].y;
+    const cross = tx * (y - curve[best].y) - ty * (x - curve[best].x);
+    near.push({ i, s, d, side: cross < 0 ? 1 : -1 });
     const b = Math.floor(s / bin);
     if (h[i] > prof[b]) prof[b] = h[i];
   }
   let first = prof.findIndex((v) => v > -Infinity);
   let last = nBins - 1;
   while (last > 0 && prof[last] === -Infinity) last--;
-  if (first < 0) return [];
+  if (first < 0) return { teeth: [], gum: [] };
   // fill gaps and smooth
   for (let b = first; b <= last; b++) if (prof[b] === -Infinity) prof[b] = prof[b - 1];
   const sm = new Float32Array(nBins);
@@ -135,19 +164,61 @@ export function autoSeeds(model: ArchModel, arch: Arch, present: number[]): { to
     }
   }
 
-  // 4. seed = highest crown point near the middle of each segment
+  // 4. seeds: highest crown point(s) of each segment. Premolars get a buccal and a lingual seed, molars
+  //    one per cusp quadrant, so fissures can never split a crown between two labels.
   const seeds: { tooth: number; v: number }[] = [];
   teeth.forEach((tooth, j) => {
     const a = bounds[j], b = bounds[j + 1], w = b - a;
-    let best = -1, bh = -Infinity;
-    for (const p of near) {
-      if (p.s < a + 0.25 * w || p.s > b - 0.25 * w || p.d > 3) continue;
-      const score = h[p.i] - 0.3 * p.d;
-      if (score > bh) (bh = score), (best = p.i);
+    const n = toothNumber(tooth);
+    const zones: { s0: number; s1: number; side: number }[] =
+      n >= 6
+        ? [
+            { s0: a + 0.15 * w, s1: a + 0.5 * w, side: 1 },
+            { s0: a + 0.15 * w, s1: a + 0.5 * w, side: -1 },
+            { s0: a + 0.5 * w, s1: b - 0.15 * w, side: 1 },
+            { s0: a + 0.5 * w, s1: b - 0.15 * w, side: -1 },
+          ]
+        : n >= 4
+          ? [
+              { s0: a + 0.25 * w, s1: b - 0.25 * w, side: 1 },
+              { s0: a + 0.25 * w, s1: b - 0.25 * w, side: -1 },
+            ]
+          : [{ s0: a + 0.25 * w, s1: b - 0.25 * w, side: 0 }];
+    for (const z of zones) {
+      let best = -1, bh = -Infinity;
+      for (const p of near) {
+        if (p.s < z.s0 || p.s > z.s1 || p.d > 3.5) continue;
+        if (z.side && p.side !== z.side) continue;
+        const score = h[p.i] - 0.3 * (z.side ? 0 : p.d);
+        if (score > bh) (bh = score), (best = p.i);
+      }
+      if (best >= 0) seeds.push({ tooth, v: best });
     }
-    if (best >= 0) seeds.push({ tooth, v: best });
   });
-  return seeds;
+  // Certain gingiva: beyond the crown's half-thickness + 2.5 mm from the crown line (per tooth type)
+  // and at least 4 mm below that tooth's crown top.
+  const segTop = teeth.map((_, j) => {
+    let m = -Infinity;
+    for (const p of near) if (p.s >= bounds[j] && p.s <= bounds[j + 1]) m = Math.max(m, h[p.i]);
+    return m;
+  });
+  const gum: number[] = [];
+  const hMax = pct(0.85);
+  for (let i = 0; i < n; i++) {
+    if (h[i] > hMax - 3) continue;
+    const x = P[3 * i], y = P[3 * i + 1];
+    let best = 0, bd = Infinity;
+    for (let k = 0; k < curve.length; k += 4) {
+      const d = (curve[k].x - x) ** 2 + (curve[k].y - y) ** 2;
+      if (d < bd) (bd = d), (best = k);
+    }
+    const sv = curve[best].s;
+    let j = bounds.findIndex((b, k) => k < teeth.length && sv >= b && sv < bounds[k + 1]);
+    if (j < 0) j = sv < bounds[0] ? 0 : teeth.length - 1;
+    const limit = HALF_BL[arch][toothNumber(teeth[j]) - 1] + 2.5;
+    if (Math.sqrt(bd) >= limit && h[i] <= segTop[j] - 4) gum.push(i);
+  }
+  return { teeth: seeds, gum };
 }
 
 /** Least-squares fit of y = a + b·x² + c·x⁴ (symmetric arch form). */

@@ -24,7 +24,7 @@ export class ArchModel {
 
   private toothVertexCache = new Map<number, Uint32Array>();
   private gingiva: { vtx: Uint32Array; tooth: Uint8Array; w: Float32Array } | null = null;
-  gingivaRadiusMm = 3;
+  gingivaRadiusMm = 4;
 
   constructor(arch: Arch, source: BufferGeometry) {
     this.arch = arch;
@@ -89,6 +89,12 @@ export class ArchModel {
     this.curvature = this.computeCurvature();
   }
 
+  private meanEdgeEstimate(): number {
+    let sum = 0, n = 0;
+    for (let f = 0; f < this.index.length && n < 20000; f += 3, n++) sum += this.dist(this.index[f], this.index[f + 1]);
+    return n ? sum / n : 0.2;
+  }
+
   private dist(a: number, b: number): number {
     const p = this.base;
     return Math.hypot(p[3 * a] - p[3 * b], p[3 * a + 1] - p[3 * b + 1], p[3 * a + 2] - p[3 * b + 2]);
@@ -119,8 +125,10 @@ export class ArchModel {
       const d = (mx * nr[3 * i] + my * nr[3 * i + 1] + mz * nr[3 * i + 2]) / cnt;
       k[i] = (2 * d) / (l2 / cnt);
     }
-    // Smooth twice to suppress scanner noise.
-    for (let it = 0; it < 2; it++) {
+    // Smooth to a fixed physical scale (~0.45 mm) so fine, noisy scanner meshes behave like coarse
+    // ones: the number of smoothing passes grows with mesh density.
+    const passes = Math.min(30, Math.max(2, Math.round((0.4 / Math.max(1e-3, this.meanEdgeEstimate())) ** 2)));
+    for (let it = 0; it < passes; it++) {
       const out = new Float32Array(n);
       for (let i = 0; i < n; i++) {
         const s = this.adjOffsets[i];
@@ -229,11 +237,24 @@ export class ArchModel {
    * `tightness` (1/mm) raises the cost for teeth to cross a valley: positive = tighter crowns (less
    * papilla leakage), negative = crowns grow further toward the gum.
    */
-  segment(radiusFor: (tooth: number) => number, tightness = 0): void {
+  segment(radiusFor: (tooth: number) => number, tightness = 0, crown?: { up: Vector3; limitFor: (tooth: number) => number }): void {
     this.ensurePaint();
     const n = this.vertexCount;
     const out = new Int16Array(n).fill(-1);
     const elev = this.curvature;
+    // Crown-height limit: a tooth may not flood further below its highest seed than a crown can be
+    // tall. This stops crowns leaking into the gingiva where the margin is shallow.
+    const height = crown ? new Float32Array(n) : null;
+    const top = new Map<number, number>();
+    if (crown && height) {
+      for (let i = 0; i < n; i++) height[i] = this.base[3 * i] * crown.up.x + this.base[3 * i + 1] * crown.up.y + this.base[3 * i + 2] * crown.up.z;
+      for (const sd of this.seeds) if (sd.v < n) top.set(sd.tooth, Math.max(top.get(sd.tooth) ?? -Infinity, height[sd.v]));
+    }
+    const penalty = (v: number, label: number) => {
+      if (label === 0 || !height || !crown) return 0;
+      const depth = (top.get(label) ?? height[v]) - height[v] - crown.limitFor(label);
+      return depth > 0 ? 3 * Math.min(1, depth / 1.5) : 0;
+    };
     const heap = new MinHeap(n * 2);
     const p = this.base;
     const seeds = this.seeds.filter((s) => s.v < n);
@@ -259,7 +280,7 @@ export class ArchModel {
       if (out[i] < 0) continue;
       for (let j = this.adjOffsets[i]; j < this.adjOffsets[i + 1]; j++) {
         const v = this.adj[j];
-        if (out[v] < 0) heap.push(elev[v] + (out[i] === 0 ? 0 : tightness), v, out[i]);
+        if (out[v] < 0) heap.push(elev[v] + (out[i] === 0 ? 0 : tightness) + penalty(v, out[i]), v, out[i]);
       }
     }
     while (heap.size) {
@@ -268,7 +289,7 @@ export class ArchModel {
       out[v] = label;
       for (let j = this.adjOffsets[v]; j < this.adjOffsets[v + 1]; j++) {
         const nb = this.adj[j];
-        if (out[nb] < 0) heap.push(Math.max(key, elev[nb] + (label === 0 ? 0 : tightness)), nb, label);
+        if (out[nb] < 0) heap.push(Math.max(key, elev[nb] + (label === 0 ? 0 : tightness) + penalty(nb, label)), nb, label);
       }
     }
     for (let i = 0; i < n; i++) this.labels[i] = out[i] < 0 ? 0 : out[i];
@@ -437,14 +458,87 @@ export class ArchModel {
         settled[g] = 0;
       }
     }
-    const vtx = new Uint32Array(entries.length);
-    const tooth = new Uint8Array(entries.length);
-    const w = new Float32Array(entries.length);
-    entries.forEach((e, i) => {
-      vtx[i] = e.v;
-      tooth[i] = e.t;
-      w[i] = sumW[e.v] > 1 ? e.w / sumW[e.v] : e.w;
-    });
+    // Harmonic refinement: solve Laplace's equation over the gum region (SOR iterations), with
+    // weight 1 on the tooth's own margin, 0 on other teeth, outside the region and on the scan border.
+    // The gum then deforms like an elastic membrane: smooth papillae between moving teeth and no
+    // ridge where the falloff ends. The distance-based weights are the starting guess.
+    const slots = 3;
+    const regionIndex = new Int32Array(n).fill(-1);
+    const regionVerts: number[] = [];
+    for (const e of entries) {
+      if (regionIndex[e.v] < 0) {
+        regionIndex[e.v] = regionVerts.length;
+        regionVerts.push(e.v);
+      }
+    }
+    const RV = regionVerts.length;
+    const slotTooth = new Uint8Array(RV * slots);
+    const slotW = new Float32Array(RV * slots);
+    for (const e of entries) {
+      const base = regionIndex[e.v] * slots;
+      let k = 0;
+      while (k < slots && slotTooth[base + k] !== 0 && slotTooth[base + k] !== e.t) k++;
+      if (k === slots) {
+        // keep the strongest three teeth
+        let weakest = 0;
+        for (let q = 1; q < slots; q++) if (slotW[base + q] < slotW[base + weakest]) weakest = q;
+        if (slotW[base + weakest] >= e.w) continue;
+        k = weakest;
+      }
+      slotTooth[base + k] = e.t;
+      slotW[base + k] = sumW[e.v] > 1 ? e.w / sumW[e.v] : e.w;
+    }
+    const valueAt = (nb: number, t: number) => {
+      const l = L[nb];
+      if (l !== 0) return l === t ? 1 : 0;
+      const r = regionIndex[nb];
+      if (r < 0) return 0;
+      const base = r * slots;
+      for (let q = 0; q < slots; q++) if (slotTooth[base + q] === t) return slotW[base + q];
+      return 0;
+    };
+    const omega = 1.7;
+    const maxIter = Math.min(250, Math.max(40, Math.round((3 * R_MM_FACTOR * this.gingivaRadiusMm) / Math.max(0.05, this.meanEdge))));
+    for (let it = 0; it < maxIter; it++) {
+      let maxDelta = 0;
+      for (let r = 0; r < RV; r++) {
+        const v = regionVerts[r];
+        const base = r * slots;
+        if (this.boundary[v]) {
+          for (let q = 0; q < slots; q++) slotW[base + q] = 0;
+          continue;
+        }
+        const s0 = this.adjOffsets[v], s1 = this.adjOffsets[v + 1];
+        const deg = s1 - s0;
+        for (let q = 0; q < slots; q++) {
+          const t = slotTooth[base + q];
+          if (!t) continue;
+          let acc = 0;
+          for (let j = s0; j < s1; j++) acc += valueAt(this.adj[j], t);
+          const old = slotW[base + q];
+          const next = Math.min(1, Math.max(0, old + omega * (acc / deg - old)));
+          slotW[base + q] = next;
+          maxDelta = Math.max(maxDelta, Math.abs(next - old));
+        }
+      }
+      if (maxDelta < 2e-4) break;
+    }
+    // Ease the ends: gum right at the margin follows the tooth almost rigidly, and the deformation
+    // fades out with zero slope at the edge of the region.
+    const outV: number[] = [], outT: number[] = [], outW: number[] = [];
+    for (let r = 0; r < RV; r++) {
+      for (let q = 0; q < slots; q++) {
+        const t = slotTooth[r * slots + q];
+        const w0 = slotW[r * slots + q];
+        if (!t || w0 < 1e-4) continue;
+        outV.push(regionVerts[r]);
+        outT.push(t);
+        outW.push(w0 * w0 * (3 - 2 * w0));
+      }
+    }
+    const vtx = new Uint32Array(outV);
+    const tooth = new Uint8Array(outT);
+    const w = new Float32Array(outW);
     this.gingiva = { vtx, tooth, w };
   }
 
@@ -485,6 +579,9 @@ export class ArchModel {
     this.geometry.computeBoundingSphere();
   }
 }
+
+/** Iteration budget factor for the harmonic gum solve (rings across the region). */
+const R_MM_FACTOR = 1;
 
 /** Binary min-heap of (key, vertex, label) used by the watershed. */
 class MinHeap {
@@ -540,4 +637,11 @@ class MinHeap {
 export function seedRadiusMm(tooth: number, scale = 1): number {
   const r = [11, 10, 11.5, 9, 9, 9.5, 9.5, 9][(tooth % 10) - 1] ?? 10;
   return r * scale;
+}
+
+/** Generous maximum crown height (cusp tip / incisal edge → gingival margin, mm) by tooth. */
+export function crownHeightLimitMm(tooth: number): number {
+  const upper = [12, 11, 12, 10, 9.5, 9, 9, 8.5];
+  const lower = [10, 10.5, 12, 10, 9.5, 9, 9, 8.5];
+  return ((tooth < 30 ? upper : lower)[(tooth % 10) - 1]) ?? 11;
 }

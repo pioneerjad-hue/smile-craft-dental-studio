@@ -21,6 +21,10 @@ export function Viewport() {
   const tool = useStudio((s) => s.tool);
   const [settings, set] = useSettings();
   const [layersOpen, setLayersOpen] = useState(false);
+  const teethCount = useStudio((s) => s.teeth.length);
+  const rootsOn = useStudio((s) => s.layers.upperRoots.visible || s.layers.lowerRoots.visible);
+  const toggleRoots = () =>
+    setState((s) => ({ layers: { ...s.layers, upperRoots: { ...s.layers.upperRoots, visible: !rootsOn }, lowerRoots: { ...s.layers.lowerRoots, visible: !rootsOn } } }));
 
   useEffect(() => {
     if (!ref.current) return;
@@ -70,6 +74,11 @@ export function Viewport() {
             </>
           )}
           <div className="sep" />
+          {teethCount > 0 && (
+            <button className={rootsOn ? 'active' : ''} onClick={toggleRoots} title="Show / hide roots (R). Lower the gum opacity in Layers to see them inside the gum.">
+              Roots
+            </button>
+          )}
           <button className={layersOpen ? 'active' : ''} onClick={() => setLayersOpen(!layersOpen)} title="Layers: visibility, colour and opacity">
             ☰ Layers
           </button>
