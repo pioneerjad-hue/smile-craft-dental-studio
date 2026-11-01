@@ -131,7 +131,28 @@ function RulesEditor({ protocol, set }: { protocol: Protocol; set: (p: Protocol)
         </details>
       </div>
       <div className="section">
-        <h3>Total movement warnings</h3>
+        <h3>Constraints</h3>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={!!protocol.constraints?.enforceTotalLimits}
+            onChange={(e) => {
+              set({ ...protocol, constraints: { ...protocol.constraints, enforceTotalLimits: e.target.checked } });
+              if (e.target.checked) {
+                const n = studio.enforceConstraints();
+                if (n) toast(`${n} tooth/teeth clamped to the protocol limits.`, 'info');
+              }
+            }}
+          />
+          Enforce total limits as hard constraints (clamp instead of warn)
+        </label>
+        <div className="hint small">
+          Per-tooth constraints live in the tooth inspector: 🔒 locks a single axis (e.g. no torque on 13), "Fixed / anchor"
+          holds a tooth completely. Constraints apply to manual edits and to imported AI plans.
+        </div>
+      </div>
+      <div className="section">
+        <h3>Total movement limits</h3>
         {TOTAL_FIELDS.map(([k, label]) => (
           <div className="field" key={k}>
             <label>{label}</label>

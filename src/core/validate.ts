@@ -70,6 +70,11 @@ export function validatePlan(
       });
       continue;
     }
+    for (const k of tp.lockedAxes ?? []) {
+      if (Math.abs(m[k]) > 1e-9) {
+        issues.push({ severity: 'error', rule: 'LOCKED-AXIS', tooth: id, message: `${shortLabel(id)} (${id}): ${k} is constrained to 0 but has ${fmt(m[k])}.` });
+      }
+    }
     const lim = totalLimitsFor(protocol, id);
     const checks: [string, number, number, string][] = [
       ['TOTAL-TRANSLATION', Math.hypot(m.mesial, m.buccal), lim.translationMm, 'mm translation'],

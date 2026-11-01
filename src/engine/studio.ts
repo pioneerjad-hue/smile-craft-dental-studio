@@ -8,6 +8,10 @@ import type { Attachment, ContactReport, Movement, Protocol, ToothFrame, ToothPl
 import { isZeroMovement, zeroMovement } from '../core/types';
 import { suggestIpr, triggeredAttachmentRules, validatePlan } from '../core/validate';
 import { newAttachment } from '../core/aiBrief';
+import { constrainMovement } from '../core/constraints';
+import { buildModelBase, openEdgeCount } from '../geometry/modelBase';
+import type { ModelBase } from '../geometry/modelBase';
+import { archOcclusalNormal } from '../geometry/frames';
 import { ArchModel, seedRadiusMm } from '../geometry/archModel';
 import { attachmentGeometry } from '../geometry/attachments';
 import { ToothBody, contactDistance } from '../geometry/contacts';
@@ -62,6 +66,12 @@ export class Studio {
         this.updateAxes();
       }
       if (s.settings !== prev.settings) this.applySettings(prev.settings.gingivaFlexMm !== s.settings.gingivaFlexMm);
+      if (s.layers !== prev.layers) {
+        this.applyLayers();
+        const colorChanged = (['upperGum', 'upperTeeth', 'lowerGum', 'lowerTeeth'] as const).some((k) => s.layers[k].color !== prev.layers[k].color);
+        if (colorChanged) this.updateColors();
+      }
+      if (s.modelBuilder !== prev.modelBuilder || (s.frames !== prev.frames && s.modelBuilder.enabled)) this.rebuildBases();
       if (s.tool !== prev.tool) this.applyTool();
       if (s.measurements !== prev.measurements) this.viewer?.setMeasurements(s.measurements, this.pendingMeasure);
       if (s.playing !== prev.playing) this.updatePlayback();
@@ -81,6 +91,8 @@ export class Studio {
       if (m) v.setArchGeometry(arch, m.geometry, null);
     }
     this.rebuildGhosts();
+    this.rebuildLayerIndices();
+    this.rebuildBases();
     this.applySettings(false);
     this.applyTool();
     this.updateColors();
@@ -307,6 +319,7 @@ export class Studio {
     setState({ teeth });
     this.updateColors();
     this.rebuildGhosts();
+    this.rebuildLayerIndices();
     this.clearAttachmentMeshes();
     if (immediate) this.recomputeFrames();
     else this.scheduleFrames();
@@ -357,9 +370,40 @@ export class Studio {
   setMovement(id: number, patch: Partial<Movement>, record = true) {
     const tp = getState().plan.teeth[id];
     if (!tp) return;
-    const movement = { ...tp.movement };
-    for (const [k, v] of Object.entries(patch)) movement[k as keyof Movement] = Math.round((v as number) * 1000) / 1000;
+    const proposed = { ...tp.movement };
+    for (const [k, v] of Object.entries(patch)) proposed[k as keyof Movement] = Math.round((v as number) * 1000) / 1000;
+    const { movement, notes } = constrainMovement(getState().protocol, tp, proposed);
+    if (notes.length) toast(notes[0], 'info');
     this.updateTooth(id, { movement }, record);
+  }
+
+  /** Lock or unlock one degree of freedom of a tooth (a locked axis is held at 0). */
+  toggleAxisLock(id: number, axis: keyof Movement) {
+    const tp = getState().plan.teeth[id];
+    if (!tp) return;
+    const locked = new Set(tp.lockedAxes ?? []);
+    if (locked.has(axis)) locked.delete(axis);
+    else locked.add(axis);
+    const lockedAxes = [...locked];
+    const movement = { ...tp.movement };
+    for (const k of lockedAxes) movement[k] = 0;
+    this.updateTooth(id, { lockedAxes, movement });
+  }
+
+  /** Re-apply every tooth's constraints (e.g. after enabling hard protocol limits). */
+  enforceConstraints(): number {
+    const { plan, protocol } = getState();
+    const next = structuredClone(plan);
+    let changed = 0;
+    for (const tp of Object.values(next.teeth)) {
+      const r = constrainMovement(protocol, tp, tp.movement);
+      if (r.notes.length) {
+        tp.movement = r.movement;
+        changed++;
+      }
+    }
+    if (changed) this.setPlan(next);
+    return changed;
   }
 
   resetTooth(id: number) {
@@ -520,17 +564,17 @@ export class Studio {
     return out;
   }
 
-  applyStage() {
+  applyStage(stageOverride?: number) {
     const v = this.viewer;
-    const { stage } = getState();
+    const stage = stageOverride ?? getState().stage;
     for (const arch of ARCHES) {
       const m = this.models[arch];
       if (!m) continue;
       m.deform(this.transformsAt(stage, arch));
       v?.markGeometryChanged(arch);
     }
-    this.updateAttachmentMeshes();
-    this.updateAxes();
+    this.updateAttachmentMeshes(stage);
+    this.updateAxes(stage);
     v?.requestRender();
   }
 
@@ -623,9 +667,10 @@ export class Studio {
     return attachmentGeometry(att, frame, body);
   }
 
-  private updateAttachmentMeshes() {
+  private updateAttachmentMeshes(stageOverride?: number) {
     const v = this.viewer;
-    const { plan, stage, settings } = getState();
+    const { plan, settings } = getState();
+    const stage = stageOverride ?? getState().stage;
     const wanted = new Set<string>();
     for (const tp of Object.values(plan.teeth)) {
       for (const att of tp.attachments) {
@@ -664,8 +709,10 @@ export class Studio {
 
   // ───────────────────────────── display ─────────────────────────────
   updateColors() {
-    const { step, selectedTooth, plan, activeTooth } = getState();
+    const { step, selectedTooth, plan, activeTooth, layers } = getState();
     const segmenting = step === 'segment' || step === 'import';
+    const gumColor: Record<Arch, Color> = { upper: new Color(layers.upperGum.color), lower: new Color(layers.lowerGum.color) };
+    const toothColor: Record<Arch, Color> = { upper: new Color(layers.upperTeeth.color), lower: new Color(layers.lowerTeeth.color) };
     for (const arch of ARCHES) {
       const m = this.models[arch];
       if (!m) continue;
@@ -676,14 +723,14 @@ export class Studio {
       for (let i = 0; i < m.vertexCount; i++) {
         const l = m.labels[i];
         let col: Color;
-        if (!l) col = anyTeeth ? COLORS.gingiva : COLORS.scan;
+        if (!l) col = anyTeeth ? gumColor[arch] : COLORS.scan;
         else {
           col = cache.get(l)!;
           if (!col) {
             if (segmenting) col = l === activeTooth ? COLORS.selected : toothHue(l);
             else if (l === selectedTooth) col = COLORS.selected;
             else if (plan.teeth[l]?.locked || plan.teeth[l]?.extracted) col = COLORS.locked;
-            else col = COLORS.tooth;
+            else col = toothColor[arch];
             cache.set(l, col);
           }
         }
@@ -694,6 +741,89 @@ export class Studio {
       attr.needsUpdate = true;
     }
     this.viewer?.requestRender();
+  }
+
+  private applyLayers() {
+    const { layers, settings } = getState();
+    this.viewer?.applyLayers(layers, { upper: settings.showUpper, lower: settings.showLower });
+  }
+
+  /** Gum layer = faces touching gingiva; teeth layer = faces whose three vertices are teeth. */
+  private rebuildLayerIndices() {
+    const v = this.viewer;
+    if (!v) return;
+    for (const arch of ARCHES) {
+      const m = this.models[arch];
+      if (!m) continue;
+      const gum: number[] = [];
+      const teeth: number[] = [];
+      for (let f = 0; f < m.faceCount; f++) {
+        const a = m.index[3 * f], b = m.index[3 * f + 1], c = m.index[3 * f + 2];
+        (m.labels[a] && m.labels[b] && m.labels[c] ? teeth : gum).push(a, b, c);
+      }
+      v.setLayerIndex(arch, new Uint32Array(gum), new Uint32Array(teeth));
+    }
+    this.applyLayers();
+  }
+
+  private bases: Partial<Record<Arch, ModelBase | null>> = {};
+
+  /** Occlusal direction used for the model base: mean of the arch's tooth frames, else scan PCA. */
+  private archOcclusal(arch: Arch): Vector3 {
+    const { frames } = getState();
+    const o = new Vector3();
+    for (const f of Object.values(frames)) if (archOf(f.id) === arch) o.add(v3(f.occlusal));
+    if (o.lengthSq() > 0) return o.normalize();
+    return archOcclusalNormal(this.models[arch]!, []);
+  }
+
+  /** Model base (printable solid closure) for an arch, or null when the model builder is off. */
+  baseFor(arch: Arch): ModelBase | null {
+    if (!getState().modelBuilder.enabled || !this.models[arch]) return null;
+    if (this.bases[arch] === undefined) {
+      this.bases[arch] = buildModelBase(this.models[arch]!, this.archOcclusal(arch), { thicknessMm: getState().modelBuilder.thicknessMm });
+    }
+    return this.bases[arch] ?? null;
+  }
+
+  rebuildBases() {
+    this.bases = {};
+    const report: Partial<Record<Arch, { openEdges: number; holesFilled: number; borderVertices: number }>> = {};
+    for (const arch of ARCHES) {
+      const m = this.models[arch];
+      if (!m) continue;
+      const base = this.baseFor(arch);
+      if (!base) {
+        this.viewer?.setBaseGeometry(arch, null);
+        continue;
+      }
+      const N = m.vertexCount;
+      const all = new Uint32Array(m.index.length + base.index.length);
+      all.set(m.index);
+      all.set(base.index, m.index.length);
+      report[arch] = { openEdges: openEdgeCount(all, N + base.positions.length / 3), holesFilled: base.holesFilled, borderVertices: base.borderLength };
+      // compact preview geometry of just the base triangles
+      const remap = new Map<number, number>();
+      const pos: number[] = [];
+      const idx: number[] = [];
+      for (const vi of base.index) {
+        let k = remap.get(vi);
+        if (k === undefined) {
+          k = remap.size;
+          remap.set(vi, k);
+          if (vi < N) pos.push(m.base[3 * vi], m.base[3 * vi + 1], m.base[3 * vi + 2]);
+          else pos.push(base.positions[3 * (vi - N)], base.positions[3 * (vi - N) + 1], base.positions[3 * (vi - N) + 2]);
+        }
+        idx.push(k);
+      }
+      const g = new BufferGeometry();
+      g.setAttribute('position', new BufferAttribute(new Float32Array(pos), 3));
+      g.setIndex(idx);
+      g.computeVertexNormals();
+      this.viewer?.setBaseGeometry(arch, g);
+    }
+    setState({ baseReport: report });
+    this.applyLayers();
   }
 
   private rebuildGhosts() {
@@ -737,6 +867,7 @@ export class Studio {
       v.setVisible(v.ghostMeshes[arch], show && settings.showGhost && stage > 0);
     }
     if (v) v.brushRadius = settings.brushRadiusMm;
+    this.applyLayers();
     if (flexChanged) this.applyStage();
     else {
       this.updateAttachmentMeshes();
@@ -757,10 +888,11 @@ export class Studio {
     v.renderer.domElement.style.cursor = tool === 'seed' || tool === 'measure' ? 'crosshair' : 'default';
   }
 
-  private updateAxes() {
+  private updateAxes(stageOverride?: number) {
     const v = this.viewer;
     if (!v) return;
-    const { selectedTooth, frames, settings, step, stage } = getState();
+    const { selectedTooth, frames, settings, step } = getState();
+    const stage = stageOverride ?? getState().stage;
     if (!settings.showAxes || selectedTooth === null || !frames[selectedTooth] || step === 'segment' || step === 'import') {
       v.setAxes([]);
       return;
@@ -815,6 +947,7 @@ export class Studio {
     for (const arch of ARCHES) this.viewer?.setArchGeometry(arch, null, null);
     this.models = {};
     this.raw = {};
+    this.bases = {};
     this.clearAttachmentMeshes();
     this.bodies.clear();
     this.samples.clear();

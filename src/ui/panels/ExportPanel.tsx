@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import type { Arch } from '../../core/fdi';
 import { exportStages, openReport, planSummary, stageStl } from '../../engine/exporter';
 import { download, safeName } from '../../engine/project';
-import { useStudio } from '../../engine/store';
+import { setState, useStudio } from '../../engine/store';
+import type { View } from '../../engine/store';
+import { VIEW_LABEL, exportVideo, videoSupported } from '../../engine/video';
 import { Check, IssuesList, NumberInput } from '../common';
 
 export function ExportPanel() {
@@ -25,6 +27,7 @@ export function ExportPanel() {
 
   return (
     <>
+      <ModelBuilderSection />
       <div className="section">
         <h3>Print models</h3>
         <div className="hint">
@@ -71,6 +74,7 @@ export function ExportPanel() {
           ))}
         </div>
       </div>
+      <VideoSection />
       <div className="section">
         <h3>Documents</h3>
         <button onClick={openReport}>Treatment plan report (print / PDF)</button>
@@ -81,5 +85,108 @@ export function ExportPanel() {
         <IssuesList issues={issues} limit={8} />
       </div>
     </>
+  );
+}
+
+function ModelBuilderSection() {
+  const mb = useStudio((s) => s.modelBuilder);
+  const report = useStudio((s) => s.baseReport);
+  const set = (patch: Partial<typeof mb>) => setState({ modelBuilder: { ...mb, ...patch } });
+  return (
+    <div className="section">
+      <h3>Model builder</h3>
+      <Check checked={mb.enabled} onChange={(v) => set({ enabled: v })}>
+        Add a flat printable base (closed solid)
+      </Check>
+      {mb.enabled && (
+        <>
+          <div className="field">
+            <label>Base below scan</label>
+            <NumberInput value={mb.thicknessMm} step={0.5} min={0.5} max={30} digits={1} onChange={(v) => set({ thicknessMm: v })} />
+          </div>
+          {(['upper', 'lower'] as Arch[]).map((a) => {
+            const r = report[a];
+            if (!r) return null;
+            return (
+              <div className="row between small" key={a}>
+                <span style={{ textTransform: 'capitalize' }}>{a}</span>
+                {r.openEdges === 0 ? <span className="pill good">watertight ✓</span> : <span className="pill warn">{r.openEdges} open edges</span>}
+                <span className="muted">{r.holesFilled ? `${r.holesFilled} hole(s) filled` : 'no holes'}</span>
+              </div>
+            );
+          })}
+          <div className="hint small">
+            The scan border is extruded to a flat plane parallel to the occlusal plane and capped, so every stage exports as one
+            closed solid ready for the slicer. Toggle and colour the base in ☰ Layers.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+const RESOLUTIONS: [string, number, number][] = [
+  ['1920 × 1080 (Full HD)', 1920, 1080],
+  ['1280 × 720 (HD)', 1280, 720],
+  ['1080 × 1080 (square, social)', 1080, 1080],
+  ['1080 × 1920 (vertical, phone)', 1080, 1920],
+];
+
+function VideoSection() {
+  const staging = useStudio((s) => s.staging);
+  const busy = useStudio((s) => s.busy);
+  const [res, setRes] = useState(0);
+  const [spsMs, setSps] = useState(0.4);
+  const [hold, setHold] = useState(1);
+  const [overlay, setOverlay] = useState(true);
+  const [initial, setInitial] = useState(false);
+  const [views, setViews] = useState<View[]>(['front', 'right', 'left', 'upperOcclusal', 'lowerOcclusal']);
+  const total = staging?.totalStages ?? 0;
+  const seconds = views.length * (2 * hold + Math.max(1, total) * spsMs);
+  const toggle = (v: View) => setViews(views.includes(v) ? views.filter((x) => x !== v) : (Object.keys(VIEW_LABEL) as View[]).filter((x) => x === v || views.includes(x)));
+  return (
+    <div className="section">
+      <h3>Simulation video (MP4)</h3>
+      {!videoSupported() && <div className="small" style={{ color: 'var(--warn)' }}>Video export needs a current Chrome, Edge or Safari.</div>}
+      <div className="field">
+        <label>Resolution</label>
+        <select value={res} onChange={(e) => setRes(+e.target.value)}>
+          {RESOLUTIONS.map(([l], i) => (
+            <option key={l} value={i}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="field">
+        <label>Sec / aligner</label>
+        <NumberInput value={spsMs} step={0.1} min={0.05} max={5} onChange={setSps} />
+      </div>
+      <div className="field">
+        <label>Hold start/end</label>
+        <NumberInput value={hold} step={0.5} min={0} max={10} digits={1} onChange={setHold} />
+      </div>
+      <div className="row wrap small">
+        {(Object.keys(VIEW_LABEL) as View[]).map((v) => (
+          <label key={v} className="checkbox">
+            <input type="checkbox" checked={views.includes(v)} onChange={() => toggle(v)} /> {VIEW_LABEL[v]}
+          </label>
+        ))}
+      </div>
+      <Check checked={overlay} onChange={setOverlay}>
+        Case name, view and aligner counter
+      </Check>
+      <Check checked={initial} onChange={setInitial}>
+        Show initial position overlay
+      </Check>
+      <button
+        className="primary"
+        disabled={!views.length || !!busy || !videoSupported()}
+        onClick={() => exportVideo({ width: RESOLUTIONS[res][1], height: RESOLUTIONS[res][2], fps: 30, secondsPerStage: spsMs, holdSeconds: hold, views, overlay, showInitial: initial })}
+      >
+        Export video · ≈ {Math.round(seconds)} s
+      </button>
+      <div className="hint small">H.264 MP4 — plays in QuickTime, PowerPoint, WhatsApp and on phones. Layer colours and opacity are used as shown.</div>
+    </div>
   );
 }

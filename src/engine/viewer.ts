@@ -1,5 +1,6 @@
 import {
   AmbientLight,
+  BufferAttribute,
   ArrowHelper,
   Box3,
   BufferGeometry,
@@ -55,7 +56,12 @@ export class Viewer {
   readonly scene = new Scene();
   readonly camera: OrthographicCamera;
   readonly controls: OrbitControls;
+  /** Full-arch meshes used for picking only (never drawn). */
   readonly archMeshes: Record<Arch, Mesh | null> = { upper: null, lower: null };
+  /** Drawn layers per arch; gum and teeth share the arch's vertex buffers. */
+  readonly layerMeshes: Record<Arch, { gum: Mesh; teeth: Mesh; base: Mesh | null } | null> = { upper: null, lower: null };
+  private layerMaterials = new Map<string, MeshStandardMaterial>();
+  private pickMaterial = new MeshBasicMaterial({ visible: false });
   readonly ghostMeshes: Record<Arch, Mesh | null> = { upper: null, lower: null };
   readonly attachmentGroup = new Group();
   readonly axesGroup = new Group();
@@ -162,22 +168,53 @@ export class Viewer {
     this.requestRender();
   }
 
+  layerMaterial(key: string, vertexColors = true): MeshStandardMaterial {
+    let m = this.layerMaterials.get(key);
+    if (!m) {
+      m = new MeshStandardMaterial({ vertexColors, roughness: 0.52, metalness: 0, side: DoubleSide });
+      this.layerMaterials.set(key, m);
+    }
+    return m;
+  }
+
   setArchGeometry(arch: Arch, geometry: BufferGeometry | null, ghostGeometry: BufferGeometry | null) {
     const old = this.archMeshes[arch];
     if (old) {
       this.scene.remove(old);
       (old.geometry as BufferGeometry).disposeBoundsTree?.();
     }
+    const oldLayers = this.layerMeshes[arch];
+    if (oldLayers) {
+      for (const m of [oldLayers.gum, oldLayers.teeth, oldLayers.base]) if (m) this.scene.remove(m);
+    }
     const oldGhost = this.ghostMeshes[arch];
     if (oldGhost) this.scene.remove(oldGhost);
     this.archMeshes[arch] = null;
+    this.layerMeshes[arch] = null;
     this.ghostMeshes[arch] = null;
     if (geometry) {
-      const mesh = new Mesh(geometry, this.toothMaterial);
+      const mesh = new Mesh(geometry, this.pickMaterial);
       mesh.userData.arch = arch;
       this.scene.add(mesh);
       this.archMeshes[arch] = mesh;
       this.bvhDirty[arch] = true;
+      const shared = (index: number[]) => {
+        const g = new BufferGeometry();
+        for (const name of ['position', 'normal', 'color']) {
+          const a = geometry.getAttribute(name);
+          if (a) g.setAttribute(name, a);
+        }
+        g.setIndex(index);
+        return g;
+      };
+      const all = Array.from(geometry.index!.array as ArrayLike<number>);
+      const gum = new Mesh(shared(all), this.layerMaterial(`${arch}Gum`));
+      const teeth = new Mesh(shared([]), this.layerMaterial(`${arch}Teeth`));
+      for (const m of [gum, teeth]) {
+        m.frustumCulled = false;
+        this.scene.add(m);
+      }
+      this.layerMeshes[arch] = { gum, teeth, base: null };
     }
     if (ghostGeometry) {
       const ghost = new Mesh(ghostGeometry, this.ghostMaterial);
@@ -185,6 +222,56 @@ export class Viewer {
       ghost.visible = false;
       this.scene.add(ghost);
       this.ghostMeshes[arch] = ghost;
+    }
+    this.requestRender();
+  }
+
+  /** Split the arch into gum and teeth layers (face index lists). */
+  setLayerIndex(arch: Arch, gum: Uint32Array, teeth: Uint32Array) {
+    const l = this.layerMeshes[arch];
+    if (!l) return;
+    l.gum.geometry.setIndex(new BufferAttribute(gum, 1));
+    l.teeth.geometry.setIndex(new BufferAttribute(teeth, 1));
+    this.requestRender();
+  }
+
+  setBaseGeometry(arch: Arch, geometry: BufferGeometry | null) {
+    const l = this.layerMeshes[arch];
+    if (!l) return;
+    if (l.base) {
+      this.scene.remove(l.base);
+      l.base.geometry.dispose();
+      l.base = null;
+    }
+    if (geometry) {
+      l.base = new Mesh(geometry, this.layerMaterial(`${arch}Base`, false));
+      this.scene.add(l.base);
+    }
+    this.requestRender();
+  }
+
+  applyLayers(layers: Record<string, { visible: boolean; opacity: number; color: string }>, archVisible: Record<Arch, boolean>) {
+    for (const arch of ['upper', 'lower'] as Arch[]) {
+      const l = this.layerMeshes[arch];
+      if (!l) continue;
+      const parts: [Mesh | null, string][] = [
+        [l.gum, `${arch}Gum`],
+        [l.teeth, `${arch}Teeth`],
+        [l.base, `${arch}Base`],
+      ];
+      for (const [mesh, key] of parts) {
+        const style = layers[key];
+        if (!mesh || !style) continue;
+        mesh.visible = archVisible[arch] && style.visible && style.opacity > 0.01;
+        const mat = mesh.material as MeshStandardMaterial;
+        const transparent = style.opacity < 0.999;
+        if (mat.transparent !== transparent) mat.needsUpdate = true;
+        mat.transparent = transparent;
+        mat.opacity = style.opacity;
+        mat.depthWrite = !transparent;
+        if (!mat.vertexColors) mat.color.set(style.color);
+        mesh.renderOrder = transparent ? 2 : 0;
+      }
     }
     this.requestRender();
   }

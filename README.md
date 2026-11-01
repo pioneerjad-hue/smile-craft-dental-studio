@@ -15,7 +15,20 @@ Everything runs locally in the browser — scans never leave the computer.
 | **3 · Plan** | Select a tooth, type or step its movement | Live 3D preview, per-movement stage cost, crown displacement, protocol warnings |
 | **4 · Stage & check** | Choose staging mode, measure contacts, apply suggested IPR | Stage count from protocol limits, tooth timeline, contact overlap/gap per contact, IPR suggestions |
 | **5 · Protocol & AI** | Edit/save your protocol, export the AI planning brief, import an AI plan | Same rules drive manual planning, validation and the AI |
-| **6 · Export** | Pick stages | Zip of binary STLs per arch per stage (+ attachment template), manifest CSV, plan JSON, printable report |
+| **6 · Export** | Pick stages, enable the model builder, render the video | Zip of binary STLs per arch per stage (+ attachment template), manifest CSV, plan JSON, printable report, MP4 simulation |
+
+**Layers** (☰ in the viewer): per arch gingiva / teeth / model base with visibility, colour and opacity, plus
+attachments, initial-position overlay and tooth axes. Translucent gum shows margins and contacts.
+
+**Constraints**: 🔒 locks a single movement axis of a tooth (held at 0), *Fixed / anchor tooth* holds a tooth
+completely, and the protocol option *Enforce total limits as hard constraints* clamps values instead of only
+warning. Constraints apply to manual edits and to imported AI plans.
+
+**Model builder**: extrudes the scan border to a flat base parallel to the occlusal plane and caps it (plus fills
+any scan holes), so each stage exports as one closed, consistently wound solid. A watertight check is shown.
+
+**Simulation video**: H.264 MP4 (Full HD, HD, square or vertical), one animated segment per chosen view with
+case name, view and aligner counter. Needs a current Chrome, Edge or Safari (WebCodecs).
 
 Keyboard: `1`–`5` views · `[` `]` stage · `Space` play · `G` initial-position overlay · `M` measure ·
 `S`/`B`/`E` segmentation tools · `Ctrl+Z`/`Ctrl+Y` undo/redo · `Ctrl+S` save project.
@@ -100,6 +113,6 @@ tests/          vitest suites
 ## Current limits
 
 - Crown-only planning (no roots/CBCT); the centre of rotation is an estimate set in the protocol.
-- No virtual base / text engraving on printed models yet; models are exported in scan orientation.
+- No text engraving on printed models yet; models are exported in scan orientation.
 - Attachments are separate shells (not boolean-merged); most slicers merge them automatically.
 - Occlusal contacts between arches are not yet measured (interproximal contacts are).

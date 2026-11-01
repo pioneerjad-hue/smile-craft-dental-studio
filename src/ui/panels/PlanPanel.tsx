@@ -184,8 +184,9 @@ export function ToothInspector() {
             const need = lim > 0 ? Math.ceil(Math.abs(v) / lim - 1e-9) : 0;
             const total = Math.max(1, st?.end && st.end > st.start ? st.end - st.start : need);
             const isLimit = st?.limitingFactor === k;
+            const axisLocked = !!tp.lockedAxes?.includes(k);
             return (
-              <div className="mv" key={k}>
+              <div className={`mv ${axisLocked ? 'locked' : ''}`} key={k}>
                 <div>
                   <div className="name">{meta.label}</div>
                   <div className="dir">
@@ -194,11 +195,14 @@ export function ToothInspector() {
                   </div>
                 </div>
                 <div className="ctrl">
-                  <button className="icon" disabled={tp.locked} onClick={() => studio.setMovement(id, { [k]: v - meta.step })}>
+                  <button className={`lock ${axisLocked ? 'on' : ''}`} title={axisLocked ? 'Constraint: axis locked at 0 — click to unlock' : 'Lock this axis (constraint)'} onClick={() => studio.toggleAxisLock(id, k)}>
+                    {axisLocked ? '🔒' : '🔓'}
+                  </button>
+                  <button className="icon" disabled={tp.locked || axisLocked} onClick={() => studio.setMovement(id, { [k]: v - meta.step })}>
                     −
                   </button>
                   <NumberInput value={v} step={meta.step} digits={meta.unit === 'mm' ? 2 : 1} onChange={(nv, rec) => studio.setMovement(id, { [k]: nv }, rec)} />
-                  <button className="icon" disabled={tp.locked} onClick={() => studio.setMovement(id, { [k]: v + meta.step })}>
+                  <button className="icon" disabled={tp.locked || axisLocked} onClick={() => studio.setMovement(id, { [k]: v + meta.step })}>
                     +
                   </button>
                   <span className="unit">{meta.unit}</span>
@@ -240,7 +244,7 @@ export function ToothInspector() {
         </div>
         <div className="row">
           <label className="checkbox">
-            <input type="checkbox" checked={!!tp.locked} onChange={(e) => studio.updateTooth(id, { locked: e.target.checked })} /> Locked (implant / bridge)
+            <input type="checkbox" checked={!!tp.locked} onChange={(e) => studio.updateTooth(id, e.target.checked ? { locked: true, movement: { mesial: 0, buccal: 0, extrusion: 0, tip: 0, torque: 0, rotation: 0 } } : { locked: false })} /> Fixed / anchor tooth (implant, bridge)
           </label>
         </div>
         <label className="checkbox">

@@ -28,9 +28,19 @@ export function stageStl(arch: Arch, stage: number, withAttachments: boolean): U
   const m = studio.models[arch];
   if (!m) throw new Error(`No ${arch} scan`);
   const T = studio.transformsAt(stage, arch);
-  const parts: { positions: ArrayLike<number>; index?: ArrayLike<number> }[] = [
-    { positions: m.deformedPositions(T), index: m.index },
-  ];
+  const deformed = m.deformedPositions(T);
+  const base = studio.baseFor(arch);
+  const parts: { positions: ArrayLike<number>; index?: ArrayLike<number> }[] = [];
+  if (base) {
+    // Closed solid: scan surface + walls + flat base sharing the border vertices.
+    const positions = new Float32Array(deformed.length + base.positions.length);
+    positions.set(deformed);
+    positions.set(base.positions, deformed.length);
+    const index = new Uint32Array(m.index.length + base.index.length);
+    index.set(m.index);
+    index.set(base.index, m.index.length);
+    parts.push({ positions, index });
+  } else parts.push({ positions: deformed, index: m.index });
   if (withAttachments) {
     const { plan } = getState();
     for (const tp of Object.values(plan.teeth)) {

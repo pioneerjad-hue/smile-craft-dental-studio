@@ -175,3 +175,28 @@ describe('AI plan import', () => {
     expect(plan.teeth[11].movement.rotation).toBe(0); // original untouched
   });
 });
+
+import { constrainMovement } from '../src/core/constraints';
+
+describe('constraints', () => {
+  it('locks axes, locks teeth, and optionally clamps to protocol limits', () => {
+    const protocol = defaultProtocol();
+    const tp: ToothPlan = { ...toothPlan(13, {}), lockedAxes: ['torque'] };
+    const r = constrainMovement(protocol, tp, { ...zeroMovement(), torque: 5, rotation: 40 });
+    expect(r.movement.torque).toBe(0);
+    expect(r.movement.rotation).toBe(40); // soft limits by default
+    expect(r.notes.length).toBe(1);
+    const hard = { ...protocol, constraints: { enforceTotalLimits: true } };
+    expect(constrainMovement(hard, tp, { ...zeroMovement(), rotation: 40 }).movement.rotation).toBe(25);
+    const t = constrainMovement(hard, tp, { ...zeroMovement(), mesial: 6, buccal: 8 }).movement;
+    expect(Math.hypot(t.mesial, t.buccal)).toBeCloseTo(4);
+    expect(constrainMovement(protocol, { ...tp, locked: true }, { ...zeroMovement(), mesial: 1 }).movement.mesial).toBe(0);
+  });
+  it('AI plan import respects constraints', () => {
+    const plan: TreatmentPlan = { teeth: { 11: { ...toothPlan(11, {}), lockedAxes: ['rotation'] } }, ipr: [], notes: '' };
+    const res = applyAiPlan(plan, { format: 'smile-craft/ai-plan@1', teeth: { '11': { rotation: 8, mesial: 0.5 } } }, [11], defaultProtocol());
+    expect(res.plan.teeth[11].movement.rotation).toBe(0);
+    expect(res.plan.teeth[11].movement.mesial).toBe(0.5);
+    expect(res.problems.length).toBe(1);
+  });
+});

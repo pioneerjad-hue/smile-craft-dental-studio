@@ -27,6 +27,32 @@ export interface Settings {
   gingivaFlexMm: number;
 }
 
+export type LayerId = 'upperGum' | 'upperTeeth' | 'upperBase' | 'lowerGum' | 'lowerTeeth' | 'lowerBase';
+export interface LayerStyle {
+  visible: boolean;
+  opacity: number;
+  color: string;
+}
+export const LAYER_LABEL: Record<LayerId, string> = {
+  upperGum: 'Gingiva',
+  upperTeeth: 'Teeth',
+  upperBase: 'Model base',
+  lowerGum: 'Gingiva',
+  lowerTeeth: 'Teeth',
+  lowerBase: 'Model base',
+};
+
+export interface ModelBuilder {
+  enabled: boolean;
+  thicknessMm: number;
+}
+
+export interface BaseReport {
+  openEdges: number;
+  holesFilled: number;
+  borderVertices: number;
+}
+
 export interface StudioState {
   step: Step;
   caseInfo: CaseInfo;
@@ -49,6 +75,9 @@ export interface StudioState {
   busy: string | null;
   toast: { text: string; kind: 'info' | 'error' | 'success'; at: number } | null;
   aiRationale: string | null;
+  layers: Record<LayerId, LayerStyle>;
+  modelBuilder: ModelBuilder;
+  baseReport: Partial<Record<Arch, BaseReport>>;
 }
 
 export function emptyPlan(): TreatmentPlan {
@@ -92,6 +121,16 @@ export const useStudio = create<StudioState>(() => ({
   busy: null,
   toast: null,
   aiRationale: null,
+  layers: {
+    upperGum: { visible: true, opacity: 1, color: '#de8f99' },
+    upperTeeth: { visible: true, opacity: 1, color: '#f5f0e0' },
+    upperBase: { visible: true, opacity: 1, color: '#c9d3e0' },
+    lowerGum: { visible: true, opacity: 1, color: '#de8f99' },
+    lowerTeeth: { visible: true, opacity: 1, color: '#f5f0e0' },
+    lowerBase: { visible: true, opacity: 1, color: '#c9d3e0' },
+  },
+  modelBuilder: { enabled: false, thicknessMm: 3 },
+  baseReport: {},
 }));
 
 export const getState = useStudio.getState;

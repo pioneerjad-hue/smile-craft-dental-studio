@@ -103,6 +103,8 @@ export interface ToothPlan {
   attachments: Attachment[];
   /** Tooth must not be moved (e.g. implant, ankylosed, bridge abutment). */
   locked?: boolean;
+  /** Constraint: these degrees of freedom are fixed at 0 for this tooth. */
+  lockedAxes?: MovementKey[];
   /** Tooth is planned for extraction / missing. */
   extracted?: boolean;
   note?: string;
@@ -195,6 +197,10 @@ export interface Protocol {
   attachments: {
     rules: AttachmentRule[];
     defaultStage: number;
+  };
+  constraints: {
+    /** Treat total-movement limits as hard constraints: values are clamped instead of only warned. */
+    enforceTotalLimits: boolean;
   };
   /** Free-text clinical rules — read by the AI planner. */
   clinicalNotes: string;

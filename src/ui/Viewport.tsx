@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { LayersPanel } from './LayersPanel';
 import { setState, useStudio } from '../engine/store';
 import type { View } from '../engine/store';
 import { studio } from '../engine/studio';
@@ -19,6 +20,7 @@ export function Viewport() {
   const busy = useStudio((s) => s.busy);
   const tool = useStudio((s) => s.tool);
   const [settings, set] = useSettings();
+  const [layersOpen, setLayersOpen] = useState(false);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -68,11 +70,15 @@ export function Viewport() {
             </>
           )}
           <div className="sep" />
+          <button className={layersOpen ? 'active' : ''} onClick={() => setLayersOpen(!layersOpen)} title="Layers: visibility, colour and opacity">
+            ☰ Layers
+          </button>
           <button className={tool === 'measure' ? 'active' : ''} onClick={() => setState({ tool: tool === 'measure' ? (step === 'segment' ? 'seed' : 'select') : 'measure' })} title="Measure distance: click two points (M)">
             📏 Measure
           </button>
         </div>
       )}
+      {hasScan && layersOpen && <LayersPanel onClose={() => setLayersOpen(false)} />}
       {busy && <div className="busy">{busy}</div>}
       {hasScan && planning && <Timeline />}
     </div>

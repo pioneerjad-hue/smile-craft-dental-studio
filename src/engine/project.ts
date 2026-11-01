@@ -32,6 +32,8 @@ export function buildProjectZip(): Uint8Array {
     protocol: s.protocol,
     measurements: s.measurements,
     settings: s.settings,
+    layers: s.layers,
+    modelBuilder: s.modelBuilder,
     arches,
   };
   files['case.json'] = strToU8(JSON.stringify(json, null, 2));
@@ -49,6 +51,8 @@ export function loadProjectZip(data: Uint8Array) {
     protocol: normalizeProtocol(json.protocol),
     settings: { ...getState().settings, ...json.settings },
     measurements: json.measurements ?? [],
+    ...(json.layers ? { layers: { ...getState().layers, ...json.layers } } : {}),
+    ...(json.modelBuilder ? { modelBuilder: json.modelBuilder } : {}),
   });
   for (const arch of ['upper', 'lower'] as Arch[]) {
     const a = json.arches?.[arch];

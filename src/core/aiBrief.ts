@@ -12,6 +12,7 @@ import type {
   TreatmentPlan,
 } from './types';
 import { MOVEMENT_KEYS, zeroMovement } from './types';
+import { constrainMovement } from './constraints';
 
 /**
  * A structured, self-describing package of everything an AI planner needs to propose a plan that
@@ -62,6 +63,7 @@ export function buildPlanningBrief(args: {
         centroid: f.centroid.map(r),
         axes: { mesial: f.mesial.map(r), buccal: f.buccal.map(r), occlusal: f.occlusal.map(r) },
         locked: !!tp?.locked,
+        lockedAxes: tp?.lockedAxes ?? [],
         extracted: !!tp?.extracted,
         currentPlan: tp ? tp.movement : zeroMovement(),
         attachments: tp?.attachments.map((a) => a.type) ?? [],
@@ -157,6 +159,9 @@ export function applyAiPlan(
       }
       tp.movement[k] = v;
     }
+    const c = constrainMovement(protocol, tp, tp.movement);
+    tp.movement = c.movement;
+    problems.push(...c.notes);
     if (typeof value.startStage === 'number' && value.startStage >= 0) tp.startStage = Math.floor(value.startStage);
     for (const type of value.attachments ?? []) {
       if (!ATTACHMENT_TYPES.has(type)) problems.push(`Tooth ${id}: unknown attachment "${type}".`);

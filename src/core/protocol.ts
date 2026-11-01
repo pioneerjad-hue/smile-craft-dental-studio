@@ -104,6 +104,7 @@ export function defaultProtocol(): Protocol {
         },
       ],
     },
+    constraints: { enforceTotalLimits: false },
     clinicalNotes: [
       'Prefer expansion and proclination limits before IPR; IPR only on contacts mesial of first molars.',
       'Do not move teeth marked as locked (implants, bridges).',
@@ -130,5 +131,6 @@ export function normalizeProtocol(p: Partial<Protocol> | undefined): Protocol {
     totalLimits: { ...d.totalLimits, ...p.totalLimits, overrides: p.totalLimits?.overrides ?? d.totalLimits.overrides },
     ipr: { ...d.ipr, ...p.ipr },
     attachments: { ...d.attachments, ...p.attachments, rules: p.attachments?.rules ?? d.attachments.rules },
+    constraints: { ...d.constraints, ...p.constraints },
   };
 }

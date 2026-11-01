@@ -140,3 +140,14 @@ table.grid input { width: 56px; text-align: right; padding: 2px 4px; }
 .checkbox { display: flex; align-items: center; gap: 6px; color: var(--text); cursor: pointer; }
 details summary { cursor: pointer; color: var(--muted); }
 @media (max-width: 1200px) { .main { grid-template-columns: 300px 1fr 260px; } .steps .label { display: none; } }
+.layers-panel { position: absolute; top: 60px; right: 12px; width: 290px; background: #0d1628f0; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; backdrop-filter: blur(6px); z-index: 4; }
+.layer-group { display: flex; flex-direction: column; gap: 3px; border-top: 1px solid var(--line); padding-top: 6px; }
+.layer-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.layer-row:not(.head) { padding-left: 14px; }
+.layer-row input[type='range'] { width: 70px; }
+.layer-row input[type='color'] { width: 22px; height: 20px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; }
+.icon.eye { min-width: 22px; padding: 0 4px; color: var(--muted); }
+.icon.eye.on { color: var(--accent); }
+.mv .lock { min-width: 22px; padding: 2px 4px; font-size: 11px; }
+.mv .lock.on { background: #78350f; border-color: var(--warn); }
+.mv.locked .name, .mv.locked input { opacity: .5; }
