@@ -22,6 +22,7 @@ import {
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { strFromU8, unzipSync } from 'fflate';
+import { ArrayBufferTarget, Muxer } from 'mp4-muxer';
 import type { DoctorArchMeta, DoctorMeta } from './format';
 
 declare global {
@@ -120,6 +121,7 @@ function main() {
         <button id="play">▶</button>
         <input id="slider" type="range" min="0" max="${total}" step="0.02" value="0">
         <span class="stage" id="label">Initial</span>
+        <button id="video" title="Download an MP4 simulation (all views, every aligner)">🎬 Video</button>
       </div>
     </div>
     <aside>
@@ -507,6 +509,103 @@ function main() {
   setView('front');
   apply(0);
   requestAnimationFrame(loop);
+
+  // ───── MP4 simulation video (front, right, left, upper, lower; every aligner)
+  const videoBtn = document.getElementById('video') as HTMLButtonElement;
+  if (!('VideoEncoder' in window)) videoBtn.style.display = 'none';
+  videoBtn.onclick = async () => {
+    const W = 1920, H = 1080, fps = 30, perStage = 0.4, hold = 1;
+    const codecs: [string, 'avc' | 'vp9'][] = [['avc1.640034', 'avc'], ['avc1.4d0034', 'avc'], ['avc1.42003e', 'avc'], ['vp09.00.40.08', 'vp9']];
+    let picked: { config: VideoEncoderConfig; mux: 'avc' | 'vp9' } | null = null;
+    for (const [codec, mux] of codecs) {
+      const config: VideoEncoderConfig = { codec, width: W, height: H, bitrate: 8_000_000, framerate: fps, avc: mux === 'avc' ? { format: 'avc' } : undefined };
+      try {
+        if ((await VideoEncoder.isConfigSupported(config)).supported) {
+          picked = { config, mux };
+          break;
+        }
+      } catch {
+        /* next */
+      }
+    }
+    if (!picked) return alert('This browser cannot create videos. Use a current Chrome, Edge or Safari.');
+    const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: picked.mux, width: W, height: H, frameRate: fps }, fastStart: 'in-memory' });
+    const encoder = new VideoEncoder({ output: (chunk, m) => muxer.addVideoChunk(chunk, m), error: (e) => console.error(e) });
+    encoder.configure(picked.config);
+    const label = document.getElementById('label')!;
+    const wasPlaying = playing;
+    playing = false;
+    const canvas2d = document.createElement('canvas');
+    canvas2d.width = W;
+    canvas2d.height = H;
+    const ctx = canvas2d.getContext('2d')!;
+    renderer.setPixelRatio(1);
+    renderer.setSize(W, H, false);
+    const views = ['front', 'right', 'left', 'upper', 'lower'];
+    const names: Record<string, string> = { front: 'Frontal', right: 'Right buccal', left: 'Left buccal', upper: 'Upper occlusal', lower: 'Lower occlusal' };
+    const holdF = Math.round(hold * fps), moveF = Math.max(1, Math.round(Math.max(1, total) * perStage * fps));
+    let frame = 0;
+    const totalFrames = views.length * (2 * holdF + moveF);
+    for (const vname of views) {
+      setView(vname);
+      renderer.setSize(W, H, false);
+      const h = camera.top - camera.bottom;
+      camera.left = (-h * W) / H / 2;
+      camera.right = (h * W) / H / 2;
+      camera.updateProjectionMatrix();
+      for (let f = 0; f < 2 * holdF + moveF; f++) {
+        const t = f < holdF ? 0 : f < holdF + moveF ? (f - holdF) / moveF : 1;
+        const st = (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2) * total;
+        apply(st);
+        renderer.render(scene, camera);
+        const g = ctx.createRadialGradient(W / 2, H * 0.35, 0, W / 2, H * 0.35, W * 0.75);
+        g.addColorStop(0, '#1b2a47');
+        g.addColorStop(1, '#0b1220');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+        ctx.drawImage(renderer.domElement, 0, 0, W, H);
+        ctx.fillStyle = '#e6edf7';
+        ctx.font = '600 34px Inter, system-ui, sans-serif';
+        ctx.textBaseline = 'top';
+        ctx.fillText([meta.lab.name, c.patientName, c.caseId].filter(Boolean).join(' · '), 40, 34);
+        ctx.fillStyle = '#8ea0bf';
+        ctx.font = '26px Inter, system-ui, sans-serif';
+        ctx.fillText(names[vname], 40, 80);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#e6edf7';
+        ctx.font = '600 34px Inter, system-ui, sans-serif';
+        ctx.fillText(st < 0.01 ? 'Initial' : st > total - 0.01 ? `Final · ${total} aligners` : `Aligner ${Math.ceil(st)} / ${total}`, W - 40, 34);
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#24314d';
+        ctx.fillRect(40, H - 46, W - 80, 8);
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillRect(40, H - 46, (W - 80) * (total ? st / total : 0), 8);
+        const vf = new VideoFrame(canvas2d, { timestamp: Math.round((frame * 1e6) / fps), duration: Math.round(1e6 / fps) });
+        encoder.encode(vf, { keyFrame: frame % (fps * 2) === 0 });
+        vf.close();
+        frame++;
+        if (frame % 10 === 0) {
+          label.textContent = `Video ${Math.round((frame / totalFrames) * 100)}%`;
+          await new Promise((r) => setTimeout(r, 0));
+          while (encoder.encodeQueueSize > 8) await new Promise((r) => setTimeout(r, 5));
+        }
+      }
+    }
+    await encoder.flush();
+    muxer.finalize();
+    encoder.close();
+    const blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${(c.caseId || c.patientName || 'case').replace(/[^\w-]+/g, '_')}_simulation.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    setView('front');
+    apply(stage);
+    playing = wasPlaying;
+  };
 
   // ───── approval replies
   const modal = document.getElementById('modal')!;

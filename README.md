@@ -60,7 +60,7 @@ WhatsApp number are remembered on the computer.
 **Doctor viewer from a Maestro export** (Case & scans → *Doctor viewer from a Maestro export*): pick the
 folder of stage models exported from Maestro (STL per stage, upper and lower; add the `.m3d` to fill in
 patient and doctor). Arch and stage come from the file names, the models are oriented automatically and
-teeth/gum coloured by auto-segmentation, and the same single-file viewer is produced — no segmentation or
+teeth/gum coloured by auto-segmentation, and the same single-file viewer is produced (its 🎬 *Video* button saves a 1080p MP4 simulation: front, right, left, upper and lower views through every aligner) — no segmentation or
 planning needed. Stages that share one mesh layout are stored as differences (small files, smooth
 animation); otherwise each stage is kept as its own model.
 
