@@ -136,6 +136,10 @@ names), and it rebuilds the treatment simulation:
 - patient and doctor in the header; optional Approve / Request changes when a reply email or WhatsApp
   is given
 - stages that share a mesh layout are stored as compact differences (a typical case is a few MB)
+- **bite**: exports already in occlusion are kept as they are; if the arches were exported separately
+  (e.g. teeth-up for printing, with bases), adding the patient's initial scans with the bite registers
+  each arch onto its scan and restores the real bite; without them an approximate bite is built
+  (midlines aligned, upper incisors in front, posterior teeth in contact) and can be nudged in mm
 
 The result opens in a new tab or saves as one HTML file to send to the doctor.
 

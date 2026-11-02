@@ -86,11 +86,27 @@ export function archOcclusalNormal(model: ArchModel, centroids: Vector3[]): Vect
   if (tCount > 10 && gCount > 10) {
     if (toothSide / tCount < gumSide / gCount) normal.negate();
   } else {
-    let s = 0;
+    let s = 0, n = 0;
     for (let i = 0; i < model.vertexCount; i += step) {
       s += model.normals[3 * i] * normal.x + model.normals[3 * i + 1] * normal.y + model.normals[3 * i + 2] * normal.z;
+      n++;
     }
-    if (s < 0) normal.negate();
+    if (Math.abs(s) > 0.08 * n) {
+      // open scan: the surface normals point out of the occlusal side
+      if (s < 0) normal.negate();
+    } else {
+      // closed model (with a base): the normals cancel out. The scanned teeth side carries far more
+      // vertices than the flat base, so the vertex centroid sits toward the teeth.
+      let lo = Infinity, hi = -Infinity, mean = 0;
+      for (const p of pts) {
+        const d = p.dot(normal);
+        lo = Math.min(lo, d);
+        hi = Math.max(hi, d);
+        mean += d;
+      }
+      mean /= Math.max(1, pts.length);
+      if (mean < (lo + hi) / 2) normal.negate();
+    }
   }
   return normal.normalize();
 }

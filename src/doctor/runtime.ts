@@ -143,6 +143,7 @@ function main() {
       </div>
       ${meta.lab.email || meta.lab.whatsapp ? '<div class="actions"><button class="primary" id="approve">✓ Approve</button><button class="warn" id="changes">✎ Request changes</button></div>' : ''}
       ${meta.mode === 'series' && Object.values(meta.series ?? {}).some((a) => a?.colored) ? `<div class="note"><span style="color:${meta.colors.gum}">■</span> Gingiva &nbsp; <span style="color:${meta.colors.tooth}">■</span> Teeth &nbsp; <span style="color:#f28c28">■</span> Attachments</div>` : ''}
+      ${meta.biteSource === 'estimated' ? '<div class="note">Bite estimated from the models (no bite registration was supplied).</div>' : ''}
       ${meta.doctorNotes ? `<div><h3>Notes from the lab</h3><div style="white-space:pre-wrap">${esc(meta.doctorNotes)}</div></div>` : ''}
       ${
         meta.occlusion.initial

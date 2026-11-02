@@ -1,11 +1,10 @@
 import type { BufferGeometry } from 'three';
-import { BufferAttribute, BufferGeometry as Geometry } from 'three';
 import { strToU8, zipSync } from 'fflate';
 import type { Zippable } from 'fflate';
 import type { Arch } from '../core/fdi';
-import { ArchModel } from '../geometry/archModel';
 import { classifyModel } from '../geometry/classify';
-import { estimatePatientFrame, frameToMatrix } from '../geometry/orient';
+import { biteTransforms } from '../geometry/bite';
+import { Vector3 } from 'three';
 import { buildStageGroups } from '../geometry/stageSeries';
 import type { StageGroup } from '../geometry/stageSeries';
 import { DOCTOR_FORMAT } from './format';
@@ -14,6 +13,10 @@ import type { DoctorMeta, SeriesArchMeta } from './format';
 const u8 = (a: ArrayBufferView) => new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
 
 export interface SeriesInput {
+  /** Initial scans of the arches in occlusion (e.g. from the intraoral scanner) to restore the real bite. */
+  biteScans?: Partial<Record<Arch, BufferGeometry>>;
+  /** Manual nudge of the upper arch (mm, patient coordinates: x right, y anterior, z up). */
+  biteAdjust?: [number, number, number];
   arches: Partial<Record<Arch, { stage: number; name: string; geometry: BufferGeometry }[]>>;
   lab: DoctorMeta['lab'];
   caseInfo: DoctorMeta['caseInfo'];
@@ -36,7 +39,7 @@ function toothFlags(arch: Arch, positions: Float32Array, index: Uint32Array): Ui
  * Doctor-viewer package built only from exported stage models (no segmentation or plan needed):
  * the models are oriented automatically, optionally coloured teeth/gum, and every stage is stored.
  */
-export function buildSeriesPackage(input: SeriesInput): { pkg: Uint8Array; stages: number } {
+export function buildSeriesPackage(input: SeriesInput): { pkg: Uint8Array; stages: number; biteSource: string } {
   const files: Zippable = {};
   const series: Partial<Record<Arch, StageGroup[]>> = {};
   const names: Partial<Record<Arch, string[]>> = {};
@@ -48,20 +51,24 @@ export function buildSeriesPackage(input: SeriesInput): { pkg: Uint8Array; stage
     series[arch] = buildStageGroups(sorted.map((x) => x.geometry));
     names[arch] = sorted.map((x) => x.name);
   }
-  // orientation from the first stage of each arch (patient frame: +X right, +Y anterior, +Z up)
-  const firstModels = (['upper', 'lower'] as Arch[])
-    .filter((a) => series[a])
-    .map((arch) => {
-      const g0 = series[arch]![0];
-      const g = new Geometry();
-      g.setAttribute('position', new BufferAttribute(g0.positions[0].slice(), 3));
-      g.setIndex(new BufferAttribute(g0.index, 1));
-      return { arch, model: new ArchModel(arch, g) };
-    });
-  const M = frameToMatrix(estimatePatientFrame(firstModels));
-  const e = M.elements;
-  for (const groups of Object.values(series)) {
-    for (const grp of groups!) {
+  // bite and orientation (patient frame: +X right, +Y anterior, +Z up)
+  input.onProgress?.('Setting up the bite…');
+  const meshOf = (g: BufferGeometry) => {
+    const ng = g.index ? g : g.toNonIndexed();
+    const series0 = buildStageGroups([ng])[0];
+    return { positions: series0.positions[0], index: series0.index };
+  };
+  const stage0: Partial<Record<Arch, { positions: Float32Array; index: Uint32Array }>> = {};
+  for (const arch of ['upper', 'lower'] as Arch[]) if (series[arch]) stage0[arch] = { positions: series[arch]![0].positions[0], index: series[arch]![0].index };
+  const scans: Partial<Record<Arch, { positions: Float32Array; index: Uint32Array }>> = {};
+  for (const arch of ['upper', 'lower'] as Arch[]) if (input.biteScans?.[arch]) scans[arch] = meshOf(input.biteScans[arch]!);
+  const adj = input.biteAdjust ?? [0, 0, 0];
+  const bite = biteTransforms(stage0, scans, new Vector3(adj[0], adj[1], adj[2]));
+  for (const arch of ['upper', 'lower'] as Arch[]) {
+    const groups = series[arch];
+    if (!groups) continue;
+    const e = bite.transforms[arch]!.elements;
+    for (const grp of groups) {
       for (const p of grp.positions) {
         for (let i = 0; i < p.length; i += 3) {
           const x = p[i], y = p[i + 1], z = p[i + 2];
@@ -122,6 +129,7 @@ export function buildSeriesPackage(input: SeriesInput): { pkg: Uint8Array; stage
     format: DOCTOR_FORMAT,
     mode: 'series',
     series: archMeta,
+    biteSource: bite.source,
     doctorNotes: input.notes,
     createdAt: new Date().toISOString(),
     lab: input.lab,
@@ -138,5 +146,5 @@ export function buildSeriesPackage(input: SeriesInput): { pkg: Uint8Array; stage
     planNotes: '',
   };
   files['meta.json'] = strToU8(JSON.stringify(meta));
-  return { pkg: zipSync(files, { level: 6 }), stages: total };
+  return { pkg: zipSync(files, { level: 6 }), stages: total, biteSource: bite.source };
 }

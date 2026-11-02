@@ -38,6 +38,8 @@ export interface DoctorMeta {
   /** 'plan' (default): planned in Smile Craft. 'series': exported stage models only. */
   mode?: 'plan' | 'series';
   series?: Partial<Record<'upper' | 'lower', SeriesArchMeta>>;
+  /** How the bite was obtained: as exported, registered to scans, or estimated. */
+  biteSource?: 'export' | 'scans' | 'estimated' | 'single';
   doctorNotes?: string;
   createdAt: string;
   lab: { name: string; email: string; whatsapp: string };

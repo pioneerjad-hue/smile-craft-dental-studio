@@ -29,7 +29,7 @@ button.primary{background:#0ea5e9;border-color:#0ea5e9;color:#031321;font-weight
 .drop.over{border-color:var(--accent);background:#0c4a6e33}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:5px 4px;border-bottom:1px solid #1d2942;text-align:left}th{color:var(--muted);font-weight:500}
-td input{width:70px}.ok{color:#86efac}.warn{color:#fcd34d}.muted{color:var(--muted)}
+td input{width:70px}input[type=file]{color:var(--muted);font-size:12px}.ok{color:#86efac}.warn{color:#fcd34d}.muted{color:var(--muted)}
 .status{min-height:20px}`;
 
 interface Item {
@@ -73,7 +73,21 @@ function render() {
       <div id="list"></div>
     </div>
     <div class="card">
-      <h2>3 · Simulation</h2>
+      <h2>3 · Bite</h2>
+      <div class="muted">If the exported models are not in occlusion, add the patient's <b>initial scans with the bite</b> (upper and lower as exported from the intraoral scanner): each arch is matched onto its scan to restore the real bite. Without them the bite is estimated from the models.</div>
+      <div class="grid">
+        <label>Upper initial scan (optional)<input type="file" id="biteU" accept=".stl,.ply,.obj"></label>
+        <label>Lower initial scan (optional)<input type="file" id="biteL" accept=".stl,.ply,.obj"></label>
+      </div>
+      <div class="muted">Fine adjustment of the upper arch (mm): + right, + forward, + up</div>
+      <div class="row">
+        <label style="width:90px">Right/left<input type="text" id="adjX" value="0"></label>
+        <label style="width:90px">Forward/back<input type="text" id="adjY" value="0"></label>
+        <label style="width:90px">Up/down<input type="text" id="adjZ" value="0"></label>
+      </div>
+    </div>
+    <div class="card">
+      <h2>4 · Simulation</h2>
       <div class="row"><button class="primary" id="build" disabled>Build simulation</button><button id="open" disabled>Open simulation</button><button id="save" disabled>Save viewer for the doctor (.html)</button></div>
       <div class="status muted" id="status"></div>
     </div>
@@ -141,7 +155,15 @@ async function build() {
       (arches[it.arch!] ??= []).push({ stage: it.stage!, name: it.file.name, geometry: parseScan(await it.file.arrayBuffer(), it.file.name) });
     }
     const v = (id: string) => $<HTMLInputElement>(id).value.trim();
-    const { pkg, stages } = buildSeriesPackage({
+    const biteScans: Parameters<typeof buildSeriesPackage>[0]['biteScans'] = {};
+    for (const [id, arch] of [['biteU', 'upper'], ['biteL', 'lower']] as const) {
+      const f = $<HTMLInputElement>(id).files?.[0];
+      if (f) biteScans[arch] = parseScan(await f.arrayBuffer(), f.name);
+    }
+    const num = (id: string) => (Number.isFinite(parseFloat(v(id))) ? parseFloat(v(id)) : 0);
+    const { pkg, stages, biteSource } = buildSeriesPackage({
+      biteScans,
+      biteAdjust: [num('adjX'), num('adjY'), num('adjZ')],
       arches,
       lab: { name: v('lab'), email: v('email'), whatsapp: v('wa') },
       caseInfo: { patientName: v('patient'), caseId: v('caseId'), clinician: v('doctor'), notes: '' },
@@ -150,7 +172,8 @@ async function build() {
       onProgress: (t) => status(t),
     });
     html = viewerHtml(pkg, `Treatment simulation${v('patient') ? ' — ' + v('patient') : ''}`, runtime);
-    status(`Simulation ready: ${stages} aligners · ${(html.length / 1048576).toFixed(1)} MB`, 'ok');
+    const biteText = { export: 'bite as exported', scans: 'bite restored from the initial scans', estimated: 'bite estimated — add the initial scans for the real bite, or adjust', single: 'one arch' }[biteSource] ?? '';
+    status(`Simulation ready: ${stages} aligners · ${biteText} · ${(html.length / 1048576).toFixed(1)} MB`, biteSource === 'estimated' ? 'warn' : 'ok');
     $('open').removeAttribute('disabled');
     $('save').removeAttribute('disabled');
   } catch (e) {
