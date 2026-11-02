@@ -58,3 +58,31 @@ export function buildStageSeries(stages: BufferGeometry[], toleranceMm = 1e-3): 
     }),
   };
 }
+
+/** Consecutive stages sharing one layout, stored as one compact group (stage positions + index). */
+export interface StageGroup {
+  from: number;
+  index: Uint32Array;
+  positions: Float32Array[];
+}
+
+/**
+ * Split a stage sequence into runs that share a layout (e.g. stage 0 without attachments, stages 1–N
+ * with attachments). Each run is stored once with per-stage positions; the viewer swaps meshes only
+ * when crossing from one run to the next.
+ */
+export function buildStageGroups(stages: BufferGeometry[]): StageGroup[] {
+  const tri = stages.map((g) => (g.index ? g.index.count : g.getAttribute('position').count) / 3);
+  const groups: StageGroup[] = [];
+  let i = 0;
+  while (i < stages.length) {
+    let j = i + 1;
+    while (j < stages.length && tri[j] === tri[i]) j++;
+    // try the whole run; if it does not share a layout, fall back to single stages
+    const run = buildStageSeries(stages.slice(i, j));
+    if (run.shared) groups.push({ from: i, index: run.index, positions: run.positions });
+    else run.meshes.forEach((m, k) => groups.push({ from: i + k, index: m.index, positions: [m.positions] }));
+    i = j;
+  }
+  return groups;
+}

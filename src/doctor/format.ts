@@ -20,12 +20,14 @@ export interface DoctorArchMeta {
 /** Exported stage models (no plan): one model per aligner stage. */
 export interface SeriesArchMeta {
   stages: number;
-  /** Shared layout: stage 0 positions + per-stage deltas; otherwise one mesh per stage. */
-  shared: boolean;
-  vertexCount: number;
+  /**
+   * Runs of consecutive stages sharing one mesh layout: files `<arch>.g<i>.idx`, `.pos0` (first stage of
+   * the run), `.d<k>` (stage from+k as differences from pos0) and `.tooth` (colour classes).
+   */
+  groups: { from: number; count: number; vertexCount: number }[];
   scale: [number, number, number];
   offset: [number, number, number];
-  /** Per-vertex tooth (1) / gum (0) flags for colouring, when available. */
+  /** Per-vertex colour classes (0 gingiva, 1 tooth, 2 attachment), when available. */
   colored: boolean;
   /** Original file name of each stage. */
   names: string[];

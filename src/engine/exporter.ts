@@ -207,7 +207,8 @@ ${s.plan.notes ? `<h2>Notes</h2><p>${esc(s.plan.notes)}</p>` : ''}
 /** Wrap a doctor package and the viewer runtime into one HTML document. */
 async function doctorHtml(pkg: Uint8Array, title: string): Promise<string> {
   const runtime = (await import('../../dist-doctor/runtime.js?raw')).default as string;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title></head><body><div>Loading treatment plan…</div><script>window.__SMILE_CASE__="${toBase64(pkg)}";</script><script>${runtime.replace(/<\/script/gi, '<\\/script')}</script></body></html>`;
+  const { viewerHtml } = await import('../doctor/html');
+  return viewerHtml(pkg, title, runtime);
 }
 
 /**
@@ -242,13 +243,6 @@ export async function exportSeriesViewer(files: { arch: Arch; stage: number; nam
   } finally {
     setState({ busy: null });
   }
-}
-
-/** Base64 of a large byte array (chunked to stay within call-stack limits). */
-function toBase64(bytes: Uint8Array): string {
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(bin);
 }
 
 /**

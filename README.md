@@ -122,6 +122,23 @@ The plan, protocol and case are already structured for an AI planner:
 Next step is wiring the brief to the Claude API so the planner runs from one button, then adding
 your past approved cases as examples.
 
+## Simulation Viewer (standalone)
+
+`SimulationViewer.html` is a separate one-file tool (build: `npm run build:viewer` →
+`dist-builder/SimulationViewer.html`). Enter the patient and doctor, drop the transition models of a
+case (one STL/PLY/OBJ per stage and arch, e.g. exported from Maestro; add the `.m3d` to fill in the
+names), and it rebuilds the treatment simulation:
+
+- gingiva pink, teeth white, attachments orange (attachment shells detected by size; teeth and gum split
+  automatically when they are one shell)
+- step navigator (Initial · 1 · 2 · … · Final), previous/next, arrow keys, play, five views, initial
+  overlay, 1080p MP4 export
+- patient and doctor in the header; optional Approve / Request changes when a reply email or WhatsApp
+  is given
+- stages that share a mesh layout are stored as compact differences (a typical case is a few MB)
+
+The result opens in a new tab or saves as one HTML file to send to the doctor.
+
 ## Run it
 
 **Offline on your laptop (no internet, no GitHub):** `SmileCraftStudio.html` is the whole studio in one

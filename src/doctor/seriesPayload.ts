@@ -3,12 +3,11 @@ import { BufferAttribute, BufferGeometry as Geometry } from 'three';
 import { strToU8, zipSync } from 'fflate';
 import type { Zippable } from 'fflate';
 import type { Arch } from '../core/fdi';
-import { sequence, toothNumber } from '../core/fdi';
-import { ArchModel, seedRadiusMm } from '../geometry/archModel';
-import { autoSegmentSeeds } from '../geometry/autoSegment';
+import { ArchModel } from '../geometry/archModel';
+import { classifyModel } from '../geometry/classify';
 import { estimatePatientFrame, frameToMatrix } from '../geometry/orient';
-import { buildStageSeries } from '../geometry/stageSeries';
-import type { StageSeries } from '../geometry/stageSeries';
+import { buildStageGroups } from '../geometry/stageSeries';
+import type { StageGroup } from '../geometry/stageSeries';
 import { DOCTOR_FORMAT } from './format';
 import type { DoctorMeta, SeriesArchMeta } from './format';
 
@@ -23,9 +22,14 @@ export interface SeriesInput {
   onProgress?: (text: string) => void;
 }
 
-/** Positions of every stage of a series (shared layout) or of each stage mesh. */
-function allPositions(s: StageSeries): Float32Array[] {
-  return s.shared ? s.positions : s.meshes.map((m) => m.positions);
+
+/** Per-vertex colour classes (0 gingiva, 1 tooth, 2 attachment), or null if classification fails. */
+function toothFlags(arch: Arch, positions: Float32Array, index: Uint32Array): Uint8Array | null {
+  try {
+    return classifyModel(arch, positions, index);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -34,47 +38,49 @@ function allPositions(s: StageSeries): Float32Array[] {
  */
 export function buildSeriesPackage(input: SeriesInput): { pkg: Uint8Array; stages: number } {
   const files: Zippable = {};
-  const series: Partial<Record<Arch, StageSeries>> = {};
+  const series: Partial<Record<Arch, StageGroup[]>> = {};
   const names: Partial<Record<Arch, string[]>> = {};
   for (const arch of ['upper', 'lower'] as Arch[]) {
     const list = input.arches[arch];
     if (!list?.length) continue;
     const sorted = list.slice().sort((a, b) => a.stage - b.stage);
     input.onProgress?.(`Reading ${sorted.length} ${arch} stages…`);
-    series[arch] = buildStageSeries(sorted.map((x) => x.geometry));
+    series[arch] = buildStageGroups(sorted.map((x) => x.geometry));
     names[arch] = sorted.map((x) => x.name);
   }
   // orientation from the first stage of each arch (patient frame: +X right, +Y anterior, +Z up)
   const firstModels = (['upper', 'lower'] as Arch[])
     .filter((a) => series[a])
     .map((arch) => {
-      const s = series[arch]!;
+      const g0 = series[arch]![0];
       const g = new Geometry();
-      g.setAttribute('position', new BufferAttribute((s.shared ? s.positions[0] : s.meshes[0].positions).slice(), 3));
-      g.setIndex(new BufferAttribute(s.shared ? s.index : s.meshes[0].index, 1));
+      g.setAttribute('position', new BufferAttribute(g0.positions[0].slice(), 3));
+      g.setIndex(new BufferAttribute(g0.index, 1));
       return { arch, model: new ArchModel(arch, g) };
     });
   const M = frameToMatrix(estimatePatientFrame(firstModels));
   const e = M.elements;
-  for (const s of Object.values(series)) {
-    for (const p of allPositions(s!)) {
-      for (let i = 0; i < p.length; i += 3) {
-        const x = p[i], y = p[i + 1], z = p[i + 2];
-        p[i] = e[0] * x + e[4] * y + e[8] * z + e[12];
-        p[i + 1] = e[1] * x + e[5] * y + e[9] * z + e[13];
-        p[i + 2] = e[2] * x + e[6] * y + e[10] * z + e[14];
+  for (const groups of Object.values(series)) {
+    for (const grp of groups!) {
+      for (const p of grp.positions) {
+        for (let i = 0; i < p.length; i += 3) {
+          const x = p[i], y = p[i + 1], z = p[i + 2];
+          p[i] = e[0] * x + e[4] * y + e[8] * z + e[12];
+          p[i + 1] = e[1] * x + e[5] * y + e[9] * z + e[13];
+          p[i + 2] = e[2] * x + e[6] * y + e[10] * z + e[14];
+        }
       }
     }
   }
   const archMeta: Partial<Record<Arch, SeriesArchMeta>> = {};
   let total = 0;
   for (const arch of ['upper', 'lower'] as Arch[]) {
-    const s = series[arch];
-    if (!s) continue;
-    const pos = allPositions(s);
-    total = Math.max(total, pos.length - 1);
+    const groups = series[arch];
+    if (!groups) continue;
+    const stageCount = groups.reduce((n, g) => n + g.positions.length, 0);
+    total = Math.max(total, stageCount - 1);
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-    for (const p of pos) for (let i = 0; i < p.length; i++) (min[i % 3] = Math.min(min[i % 3], p[i])), (max[i % 3] = Math.max(max[i % 3], p[i]));
+    for (const g of groups) for (const p of g.positions) for (let i = 0; i < p.length; i++) (min[i % 3] = Math.min(min[i % 3], p[i])), (max[i % 3] = Math.max(max[i % 3], p[i]));
     const scale = [0, 1, 2].map((k) => Math.max(1e-6, (max[k] - min[k]) / 65000)) as [number, number, number];
     const offset = [0, 1, 2].map((k) => (max[k] + min[k]) / 2) as [number, number, number];
     const quant = (p: Float32Array) => {
@@ -83,40 +89,34 @@ export function buildSeriesPackage(input: SeriesInput): { pkg: Uint8Array; stage
       return q;
     };
     let colored = false;
-    if (s.shared) {
-      files[`${arch}.idx`] = u8(s.index);
-      const q0 = quant(s.positions[0]);
-      files[`${arch}.pos0`] = u8(q0);
-      // later stages as differences from stage 0: unmoved gum compresses to almost nothing
-      s.positions.slice(1).forEach((p, k) => {
+    groups.forEach((g, gi) => {
+      const key = `${arch}.g${gi}`;
+      files[`${key}.idx`] = u8(g.index);
+      const q0 = quant(g.positions[0]);
+      files[`${key}.pos0`] = u8(q0);
+      // later stages of the run as differences from its first stage: unmoved areas compress to nothing
+      g.positions.slice(1).forEach((p, k) => {
         const q = quant(p);
         for (let i = 0; i < q.length; i++) q[i] -= q0[i];
-        files[`${arch}.d${k + 1}`] = u8(q);
+        files[`${key}.d${k + 1}`] = u8(q);
       });
       if (input.colorize) {
-        try {
-          input.onProgress?.(`Colouring ${arch} teeth…`);
-          const g = new Geometry();
-          g.setAttribute('position', new BufferAttribute(s.positions[0].slice(), 3));
-          g.setIndex(new BufferAttribute(s.index, 1));
-          const model = new ArchModel(arch, g);
-          const auto = autoSegmentSeeds(model, arch, sequence(arch).filter((t) => toothNumber(t) <= 7));
-          for (const sd of auto.teeth) model.addSeed(sd.v, sd.tooth);
-          model.paintVertices(auto.gum, 0);
-          model.segment((id) => seedRadiusMm(id));
-          files[`${arch}.tooth`] = Uint8Array.from(model.labels, (l) => (l ? 1 : 0));
+        input.onProgress?.(`Colouring ${arch} models (${gi + 1}/${groups.length})…`);
+        const flags = toothFlags(arch, g.positions[0], g.index);
+        if (flags) {
+          files[`${key}.tooth`] = flags;
           colored = true;
-        } catch {
-          colored = false;
         }
       }
-    } else {
-      s.meshes.forEach((m, k) => {
-        files[`${arch}.m${k}.idx`] = u8(m.index);
-        files[`${arch}.m${k}.pos`] = u8(quant(m.positions));
-      });
-    }
-    archMeta[arch] = { stages: pos.length, shared: s.shared, vertexCount: pos[0].length / 3, scale, offset, colored, names: names[arch]! };
+    });
+    archMeta[arch] = {
+      stages: stageCount,
+      groups: groups.map((g) => ({ from: g.from, count: g.positions.length, vertexCount: g.positions[0].length / 3 })),
+      scale,
+      offset,
+      colored,
+      names: names[arch]!,
+    };
   }
   const meta: DoctorMeta = {
     format: DOCTOR_FORMAT,

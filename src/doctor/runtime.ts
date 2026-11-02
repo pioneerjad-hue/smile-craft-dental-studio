@@ -47,6 +47,9 @@ header b{font-size:16px}header .muted{color:var(--muted)}
 .bar.top{top:10px}.bar.bottom{bottom:10px;align-items:center;background:#0d1628e6;border:1px solid var(--line);border-radius:12px;padding:8px}
 .bar.bottom input{flex:1;min-width:120px;accent-color:var(--accent)}
 .bar.bottom button{padding:6px 9px}
+.steps{position:absolute;left:10px;right:10px;bottom:72px;display:flex;gap:4px;overflow-x:auto;justify-content:safe center;padding:4px;scrollbar-width:thin}
+.steps button{flex:0 0 auto;min-width:38px;padding:5px 9px;font-size:12px;background:#0d1628e6;font-variant-numeric:tabular-nums}
+.steps button.on{background:#0ea5e9;border-color:#0ea5e9;color:#031321;font-weight:700}
 .stage{min-width:120px;text-align:center;font-variant-numeric:tabular-nums}
 aside{border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:14px;display:flex;flex-direction:column;gap:14px}
 h3{margin:0 0 6px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
@@ -108,9 +111,10 @@ function main() {
   document.body.innerHTML = `
   <div class="app">
     <header>
-      <b>${esc(meta.lab.name || 'Treatment plan')}</b>
-      <span>${esc(c.patientName)}${c.caseId ? ' · ' + esc(c.caseId) : ''}</span>
-      <span class="muted">${c.clinician ? 'Dr ' + esc(c.clinician) + ' · ' : ''}${new Date(meta.createdAt).toLocaleDateString()}</span>
+      <b>${esc(meta.lab.name || 'Treatment simulation')}</b>
+      ${c.patientName ? `<span><span class="muted">Patient</span> ${esc(c.patientName)}</span>` : ''}
+      ${c.clinician ? `<span><span class="muted">Doctor</span> ${esc(c.clinician)}</span>` : ''}
+      <span class="muted">${c.caseId ? esc(c.caseId) + ' · ' : ''}${new Date(meta.createdAt).toLocaleDateString()}</span>
     </header>
     <div class="view" id="view">
       <div class="bar top">
@@ -118,6 +122,7 @@ function main() {
         <button data-view="upper">Upper</button><button data-view="lower">Lower</button>
         <button id="tU" class="on">U</button><button id="tL" class="on">L</button><button id="tG">Initial</button>
       </div>
+      <div class="steps" id="steps">${Array.from({ length: total + 1 }, (_, i) => `<button data-step="${i}">${i === 0 ? 'Initial' : i === total ? `${i} · Final` : i}</button>`).join('')}</div>
       <div class="bar bottom">
         <button id="first" title="Initial (Home)">⏮</button>
         <button id="prev" title="Previous aligner (←)">◀</button>
@@ -136,7 +141,8 @@ function main() {
         <div><b>${Math.ceil((total * meta.daysPerStage) / 7)}</b><span>weeks</span></div>
         ${meta.mode === 'series' ? `<div><b>${meta.archStages.upper || '–'}/${meta.archStages.lower || '–'}</b><span>upper / lower</span></div>` : `<div><b>${meta.ipr.length}</b><span>IPR contacts</span></div>`}
       </div>
-      <div class="actions"><button class="primary" id="approve">✓ Approve</button><button class="warn" id="changes">✎ Request changes</button></div>
+      ${meta.lab.email || meta.lab.whatsapp ? '<div class="actions"><button class="primary" id="approve">✓ Approve</button><button class="warn" id="changes">✎ Request changes</button></div>' : ''}
+      ${meta.mode === 'series' && Object.values(meta.series ?? {}).some((a) => a?.colored) ? `<div class="note"><span style="color:${meta.colors.gum}">■</span> Gingiva &nbsp; <span style="color:${meta.colors.tooth}">■</span> Teeth &nbsp; <span style="color:#f28c28">■</span> Attachments</div>` : ''}
       ${meta.doctorNotes ? `<div><h3>Notes from the lab</h3><div style="white-space:pre-wrap">${esc(meta.doctorNotes)}</div></div>` : ''}
       ${
         meta.occlusion.initial
@@ -275,101 +281,99 @@ function main() {
     };
   }
 
-  // ───── exported stage models (series mode)
+  // ───── exported stage models (series mode): runs of stages sharing one mesh layout
+  interface GroupRuntime {
+    from: number;
+    count: number;
+    index: Uint32Array;
+    base: Float32Array;
+    deltas: Int16Array[];
+    flags: Uint8Array | null;
+    colors: Float32Array;
+    ghostIndex: number[];
+  }
   interface SeriesRuntime {
     meta: import('./format').SeriesArchMeta;
     mesh: Mesh;
-    ghost: Mesh | null;
+    ghost: Mesh;
+    groups: GroupRuntime[];
+    current: number;
+    /** Positions of stage 0 (for the bounding box). */
     base: Float32Array;
-    deltas: Int16Array[];
-    meshes: { pos: Float32Array; index: Uint32Array }[];
-    shown: number;
   }
   const series: Partial<Record<Arch, SeriesRuntime>> = {};
+  const attachment = new Color('#f28c28');
+  const stone = new Color('#ece6da');
+  const classColor = (f: number) => (f === 2 ? attachment : f === 1 ? tooth : gum);
   for (const arch of ['upper', 'lower'] as Arch[]) {
     const sm = meta.series?.[arch];
     if (!sm) continue;
-    const dq = (q: Int16Array) => {
-      const p = new Float32Array(q.length);
-      for (let i = 0; i < q.length; i++) p[i] = q[i] * sm.scale[i % 3] + sm.offset[i % 3];
-      return p;
-    };
-    const stone = new Color('#ece6da');
+    const groups: GroupRuntime[] = sm.groups.map((gm, gi) => {
+      const key = `${arch}.g${gi}`;
+      const q = view(Int16Array, files[`${key}.pos0`], 2);
+      const base = new Float32Array(q.length);
+      for (let i = 0; i < q.length; i++) base[i] = q[i] * sm.scale[i % 3] + sm.offset[i % 3];
+      const deltas: Int16Array[] = [];
+      for (let k = 1; k < gm.count; k++) deltas.push(view(Int16Array, files[`${key}.d${k}`], 2));
+      const index = view(Uint32Array, files[`${key}.idx`], 4);
+      const flags = files[`${key}.tooth`] ?? null;
+      const colors = new Float32Array(base.length);
+      for (let i = 0; i < gm.vertexCount; i++) {
+        const cc = flags ? classColor(flags[i]) : stone;
+        colors.set([cc.r, cc.g, cc.b], 3 * i);
+      }
+      const ghostIndex: number[] = [];
+      if (flags) for (let f = 0; f < index.length; f += 3) if (flags[index[f]] === 1 && flags[index[f + 1]] === 1 && flags[index[f + 2]] === 1) ghostIndex.push(index[f], index[f + 1], index[f + 2]);
+      return { from: gm.from, count: gm.count, index, base, deltas, flags, colors, ghostIndex };
+    });
     const geom = new BufferGeometry();
-    let base = new Float32Array(0);
-    const deltas: Int16Array[] = [];
-    const meshes: SeriesRuntime['meshes'] = [];
-    let ghost: Mesh | null = null;
-    if (sm.shared) {
-      base = dq(view(Int16Array, files[`${arch}.pos0`], 2));
-      for (let k = 1; k < sm.stages; k++) deltas.push(view(Int16Array, files[`${arch}.d${k}`], 2));
-      const index = view(Uint32Array, files[`${arch}.idx`], 4);
-      geom.setAttribute('position', new BufferAttribute(base.slice(), 3));
-      geom.setIndex(new BufferAttribute(index, 1));
-      const col = new Float32Array(base.length);
-      const flags = sm.colored ? files[`${arch}.tooth`] : null;
-      for (let i = 0; i < sm.vertexCount; i++) {
-        const cc = flags ? (flags[i] ? tooth : gum) : stone;
-        col.set([cc.r, cc.g, cc.b], 3 * i);
-      }
-      geom.setAttribute('color', new BufferAttribute(col, 3));
-      if (flags) {
-        const gIdx: number[] = [];
-        for (let f = 0; f < index.length; f += 3) if (flags[index[f]] && flags[index[f + 1]] && flags[index[f + 2]]) gIdx.push(index[f], index[f + 1], index[f + 2]);
-        const gg = new BufferGeometry();
-        gg.setAttribute('position', new BufferAttribute(base, 3));
-        gg.setIndex(gIdx);
-        ghost = new Mesh(gg, new MeshBasicMaterial({ color: 0x3d8bfd, transparent: true, opacity: 0.35, depthWrite: false, side: DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 8 }));
-        ghost.visible = false;
-        scene.add(ghost);
-      }
-    } else {
-      for (let k = 0; k < sm.stages; k++) meshes.push({ pos: dq(view(Int16Array, files[`${arch}.m${k}.pos`], 2)), index: view(Uint32Array, files[`${arch}.m${k}.idx`], 4) });
-      base = meshes[0].pos;
-      geom.setAttribute('position', new BufferAttribute(meshes[0].pos, 3));
-      geom.setIndex(new BufferAttribute(meshes[0].index, 1));
-      const col = new Float32Array(meshes[0].pos.length).fill(0);
-      for (let i = 0; i < col.length; i += 3) col.set([stone.r, stone.g, stone.b], i);
-      geom.setAttribute('color', new BufferAttribute(col, 3));
-    }
-    geom.computeVertexNormals();
     const mesh = new Mesh(geom, new MeshStandardMaterial({ vertexColors: true, roughness: 0.55, side: DoubleSide }));
     mesh.frustumCulled = false;
-    scene.add(mesh);
-    series[arch] = { meta: sm, mesh, ghost, base, deltas, meshes, shown: 0 };
+    // initial-position overlay = teeth of stage 0
+    const g0 = groups[0];
+    const gg = new BufferGeometry();
+    gg.setAttribute('position', new BufferAttribute(g0.base, 3));
+    gg.setIndex(g0.ghostIndex);
+    const ghost = new Mesh(gg, new MeshBasicMaterial({ color: 0x3d8bfd, transparent: true, opacity: 0.35, depthWrite: false, side: DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 8 }));
+    ghost.visible = false;
+    scene.add(mesh, ghost);
+    series[arch] = { meta: sm, mesh, ghost, groups, current: -1, base: g0.base };
   }
+  const groupOf = (a: SeriesRuntime, st: number) => {
+    let g = 0;
+    for (let i = 0; i < a.groups.length; i++) if (a.groups[i].from <= st) g = i;
+    return g;
+  };
   const applySeries = (stage: number) => {
     for (const a of Object.values(series)) {
       if (!a) continue;
       const last = a.meta.stages - 1;
       const st = Math.min(stage, last);
-      if (a.meta.shared) {
-        const pos = (a.mesh.geometry.getAttribute('position') as BufferAttribute).array as Float32Array;
-        const s0 = Math.floor(st), s1 = Math.min(last, s0 + 1), f = st - s0;
-        const d0 = s0 > 0 ? a.deltas[s0 - 1] : null, d1 = s1 > 0 ? a.deltas[s1 - 1] : null;
-        const sc = a.meta.scale;
-        for (let i = 0; i < pos.length; i++) {
-          const q = (d0 ? d0[i] * (1 - f) : 0) + (d1 ? d1[i] * f : 0);
-          pos[i] = a.base[i] + q * sc[i % 3];
-        }
-        a.mesh.geometry.getAttribute('position').needsUpdate = true;
-        a.mesh.geometry.computeVertexNormals();
-      } else {
-        const k = Math.round(st);
-        if (k !== a.shown) {
-          const m = a.meshes[k];
-          a.mesh.geometry.setAttribute('position', new BufferAttribute(m.pos, 3));
-          const col = new Float32Array(m.pos.length);
-          const stone = new Color('#ece6da');
-          for (let i = 0; i < col.length; i += 3) col.set([stone.r, stone.g, stone.b], i);
-          a.mesh.geometry.setAttribute('color', new BufferAttribute(col, 3));
-          a.mesh.geometry.setIndex(new BufferAttribute(m.index, 1));
-          a.mesh.geometry.computeVertexNormals();
-          a.shown = k;
-        }
-      }
-      if (a.ghost) a.ghost.visible = showGhost && a.mesh.visible && stage > 0.01;
+      const s0 = Math.floor(st), s1 = Math.min(last, s0 + 1), f = st - s0;
+      const g0 = groupOf(a, s0), g1 = groupOf(a, s1);
+      if (g0 === g1) switchTo(a, g0, s0, f, s1);
+      // across a layout change (e.g. attachments appear) the mesh switches at the half-way point
+      else if (f < 0.5) switchTo(a, g0, s0, 0);
+      else switchTo(a, g1, s1, 0);
     }
+  };
+  /** Show stage s0 (blended toward s1 by f) of group gi. */
+  const switchTo = (a: SeriesRuntime, gi: number, s0: number, f: number, s1 = s0) => {
+    const g = a.groups[gi];
+    if (a.current !== gi) {
+      a.mesh.geometry.setAttribute('position', new BufferAttribute(g.base.slice(), 3));
+      a.mesh.geometry.setAttribute('color', new BufferAttribute(g.colors, 3));
+      a.mesh.geometry.setIndex(new BufferAttribute(g.index, 1));
+      a.current = gi;
+    }
+    const pos = (a.mesh.geometry.getAttribute('position') as BufferAttribute).array as Float32Array;
+    const k0 = s0 - g.from, k1 = s1 - g.from;
+    const d0 = k0 > 0 ? g.deltas[k0 - 1] : null, d1 = k1 > 0 ? g.deltas[k1 - 1] : null;
+    const sc = a.meta.scale;
+    for (let i = 0; i < pos.length; i++) pos[i] = g.base[i] + ((d0 ? d0[i] * (1 - f) : 0) + (d1 ? d1[i] * f : 0)) * sc[i % 3];
+    a.mesh.geometry.getAttribute('position').needsUpdate = true;
+    a.mesh.geometry.computeVertexNormals();
+    a.ghost.visible = showGhost && a.mesh.visible && s0 + f > 0.01;
   };
 
   /** Tooth matrices at a (fractional) stage: linear blend between neighbouring stages. */
@@ -432,6 +436,14 @@ function main() {
       }
       a.ghost.visible = showGhost && a.mesh.visible && stage > 0.01;
     }
+    const cur = Math.round(stage);
+    document.querySelectorAll<HTMLButtonElement>('#steps button').forEach((b) => {
+      const on = +b.dataset.step! === cur && Math.abs(stage - cur) < 0.05;
+      if (on !== b.classList.contains('on')) {
+        b.classList.toggle('on', on);
+        if (on) b.scrollIntoView({ block: 'nearest', inline: 'center' });
+      }
+    });
     const label = document.getElementById('label')!;
     label.textContent = stage < 0.01 ? 'Initial' : stage > total - 0.01 ? `Final · ${total} aligners` : `Aligner ${Math.ceil(stage)} / ${total}`;
   };
@@ -505,6 +517,7 @@ function main() {
     slider.value = String(stage);
     apply(stage);
   };
+  document.querySelectorAll<HTMLButtonElement>('#steps button').forEach((b) => (b.onclick = () => goTo(+b.dataset.step!)));
   document.getElementById('first')!.onclick = () => goTo(0);
   document.getElementById('last')!.onclick = () => goTo(total);
   document.getElementById('prev')!.onclick = () => goTo(Math.ceil(stage - 1e-6) - 1);
@@ -597,7 +610,7 @@ function main() {
         ctx.fillStyle = '#e6edf7';
         ctx.font = '600 34px Inter, system-ui, sans-serif';
         ctx.textBaseline = 'top';
-        ctx.fillText([meta.lab.name, c.patientName, c.caseId].filter(Boolean).join(' · '), 40, 34);
+        ctx.fillText([c.patientName && `Patient: ${c.patientName}`, c.clinician && `Doctor: ${c.clinician}`].filter(Boolean).join('   ·   ') || meta.lab.name || c.caseId, 40, 34);
         ctx.fillStyle = '#8ea0bf';
         ctx.font = '26px Inter, system-ui, sans-serif';
         ctx.fillText(names[vname], 40, 80);
@@ -650,8 +663,10 @@ function main() {
     document.getElementById('mtitle')!.textContent = d === 'APPROVED' ? 'Approve this treatment plan' : 'Request changes';
     modal.classList.add('open');
   };
-  document.getElementById('approve')!.onclick = () => open('APPROVED');
-  document.getElementById('changes')!.onclick = () => open('CHANGES REQUESTED');
+  const approveBtn = document.getElementById('approve');
+  if (approveBtn) approveBtn.onclick = () => open('APPROVED');
+  const changesBtn = document.getElementById('changes');
+  if (changesBtn) changesBtn.onclick = () => open('CHANGES REQUESTED');
   document.getElementById('close')!.onclick = () => modal.classList.remove('open');
   document.getElementById('copy')!.onclick = async () => {
     await navigator.clipboard?.writeText(message());
