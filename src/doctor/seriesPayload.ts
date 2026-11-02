@@ -1,3 +1,4 @@
+import { orientWinding } from '../geometry/winding';
 import type { BufferGeometry } from 'three';
 import { strToU8, zipSync } from 'fflate';
 import type { Zippable } from 'fflate';
@@ -79,6 +80,8 @@ export function buildSeriesPackage(input: SeriesInput): { pkg: Uint8Array; stage
       }
     }
   }
+  // consistent outward-facing triangles (inward-facing exported shells render black)
+  for (const arch of ['upper', 'lower'] as Arch[]) for (const grp of series[arch] ?? []) orientWinding(grp.positions[0], grp.index);
   const archMeta: Partial<Record<Arch, SeriesArchMeta>> = {};
   let total = 0;
   for (const arch of ['upper', 'lower'] as Arch[]) {

@@ -25,6 +25,30 @@ import { strFromU8, unzipSync } from 'fflate';
 import { ArrayBufferTarget, Muxer } from 'mp4-muxer';
 import type { DoctorArchMeta, DoctorMeta } from './format';
 
+/**
+ * Lit material robust to exported meshes whose triangles face inward or have mixed winding (their
+ * vertex normals point into the model or cancel out, which renders as black patches): the shading
+ * normal is made to face the camera and falls back to the true face normal when the vertex normal
+ * disagrees with it.
+ */
+function robustMaterial(params: ConstructorParameters<typeof MeshStandardMaterial>[0]): MeshStandardMaterial {
+  const m = new MeshStandardMaterial({ ...params, side: DoubleSide });
+  m.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <normal_fragment_begin>',
+      `#include <normal_fragment_begin>
+      {
+        vec3 fN = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
+        float d = dot(normal, fN);
+        if (d < 0.0) { normal = -normal; d = -d; }
+        if (d < 0.35 || length(vNormal) < 0.2) normal = fN;
+      }`,
+    );
+  };
+  m.customProgramCacheKey = () => 'robust';
+  return m;
+}
+
 declare global {
   interface Window {
     __SMILE_CASE__?: string;
@@ -235,7 +259,7 @@ function main() {
     }
     geom.setAttribute('color', new BufferAttribute(col, 3));
     geom.computeVertexNormals();
-    const mesh = new Mesh(geom, new MeshStandardMaterial({ vertexColors: true, roughness: 0.52, side: DoubleSide }));
+    const mesh = new Mesh(geom, robustMaterial({ vertexColors: true, roughness: 0.52 }));
     mesh.frustumCulled = false;
     const gIdx: number[] = [];
     for (let f = 0; f < index.length; f += 3) if (labels[index[f]] && labels[index[f + 1]] && labels[index[f + 2]]) gIdx.push(index[f], index[f + 1], index[f + 2]);
@@ -248,7 +272,7 @@ function main() {
     const toothVerts = new Map<number, number[]>();
     for (let i = 0; i < am.vertexCount; i++) if (labels[i]) (toothVerts.get(labels[i]) ?? toothVerts.set(labels[i], []).get(labels[i])!).push(i);
     const extras: ArchRuntime['extras'] = [];
-    const mat = new MeshStandardMaterial({ color: 0x9fd3ff, roughness: 0.35 });
+    const mat = robustMaterial({ color: 0x9fd3ff, roughness: 0.35 });
     for (const a of am.attachments) {
       const g = new BufferGeometry();
       g.setAttribute('position', new BufferAttribute(view(Float32Array, files[a.file], 4), 3));
@@ -262,7 +286,7 @@ function main() {
       const g = new BufferGeometry();
       g.setAttribute('position', new BufferAttribute(view(Float32Array, files[p.file], 4), 3));
       g.computeVertexNormals();
-      const m = new Mesh(g, new MeshStandardMaterial({ color: tooth, roughness: 0.5 }));
+      const m = new Mesh(g, robustMaterial({ color: tooth, roughness: 0.5 }));
       scene.add(m);
       extras.push({ mesh: m, stageFrom: p.stageFrom, shifts: view(Float32Array, files[`${p.file}.shift`], 4) });
     }
@@ -328,7 +352,7 @@ function main() {
       return { from: gm.from, count: gm.count, index, base, deltas, flags, colors, ghostIndex };
     });
     const geom = new BufferGeometry();
-    const mesh = new Mesh(geom, new MeshStandardMaterial({ vertexColors: true, roughness: 0.55, side: DoubleSide }));
+    const mesh = new Mesh(geom, robustMaterial({ vertexColors: true, roughness: 0.55 }));
     mesh.frustumCulled = false;
     // initial-position overlay = teeth of stage 0
     const g0 = groups[0];
