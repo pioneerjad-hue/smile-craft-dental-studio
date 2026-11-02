@@ -14,9 +14,9 @@ export const ATTACHMENT = 2;
  * 0 = gingiva, 1 = tooth, 2 = attachment.
  *
  * Exported transition models are usually several shells: the gingiva (+ teeth, or teeth as their own
- * shells) and small attachment shells. Shells smaller than an attachment (bounding-box diagonal under
- * 6.5 mm) are attachments; when ≥ 4 tooth-sized shells exist the largest shell is the gingiva; otherwise
- * the largest shell contains gum and teeth and is split by automatic segmentation.
+ * shells, possibly with roots) and small attachment shells. Shells under 6.5 mm (bounding-box diagonal)
+ * are attachments, shells under 60 % of the arch size are teeth; when ≥ 4 tooth shells exist the
+ * largest shell is the gingiva, otherwise it contains gum and teeth and is split automatically.
  */
 export function classifyModel(arch: Arch, positions: Float32Array, index: Uint32Array): Uint8Array {
   const n = positions.length / 3;
@@ -43,10 +43,14 @@ export function classifyModel(arch: Arch, positions: Float32Array, index: Uint32
   const list = [...comps.values()].map((c) => ({ ...c, diag: Math.hypot(c.max[0] - c.min[0], c.max[1] - c.min[1], c.max[2] - c.min[2]) }));
   list.sort((a, b) => b.verts.length - a.verts.length);
   const largest = list[0];
-  const toothShells = list.slice(1).filter((c) => c.diag >= 6.5 && c.diag < 25);
+  // Size classes relative to the arch: a tooth shell (crown, or crown + root) is far smaller than the
+  // gingiva/arch shell; an attachment is a few millimetres.
+  const toothMax = Math.max(25, (largest?.diag ?? 60) * 0.6);
+  const cls = (d: number) => (d < 6.5 ? ATTACHMENT : d < toothMax ? TOOTH : GUM);
+  const toothShells = list.slice(1).filter((c) => cls(c.diag) === TOOTH);
   for (const c of list.slice(1)) {
-    const cls = c.diag < 6.5 ? ATTACHMENT : c.diag < 25 ? TOOTH : GUM;
-    for (const v of c.verts) flags[v] = cls;
+    const k = cls(c.diag);
+    for (const v of c.verts) flags[v] = k;
   }
   if (toothShells.length >= 4 || !largest) return flags; // gingiva is its own shell (already 0)
   // largest shell = gum + teeth: segment it automatically

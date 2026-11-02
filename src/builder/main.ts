@@ -88,6 +88,7 @@ function render() {
     </div>
     <div class="card">
       <h2>4 · Simulation</h2>
+      <label style="max-width:360px">Colours<select id="colour"><option value="auto">Automatic — gingiva pink, teeth white, attachments orange</option><option value="plain">One colour (model colour)</option></select></label>
       <div class="row"><button class="primary" id="build" disabled>Build simulation</button><button id="open" disabled>Open simulation</button><button id="save" disabled>Save viewer for the doctor (.html)</button></div>
       <div class="status muted" id="status"></div>
     </div>
@@ -168,7 +169,7 @@ async function build() {
       lab: { name: v('lab'), email: v('email'), whatsapp: v('wa') },
       caseInfo: { patientName: v('patient'), caseId: v('caseId'), clinician: v('doctor'), notes: '' },
       notes: '',
-      colorize: true,
+      colorize: $<HTMLSelectElement>('colour').value === 'auto',
       onProgress: (t) => status(t),
     });
     html = viewerHtml(pkg, `Treatment simulation${v('patient') ? ' — ' + v('patient') : ''}`, runtime);
