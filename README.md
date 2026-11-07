@@ -35,6 +35,31 @@ Keyboard: `1`–`5` views · `[` `]` stage · `Space` play · `G` initial-positi
 
 Try it without patient data: **Demo case (segmented)** or **Demo – segment yourself** on the first screen.
 
+## Doctor portal (`portal.html`)
+
+A web portal for the dentists who send cases to Smile Craft, modelled on what doctors rely on in the
+leading aligner portals (Invisalign Doctor Site + ClinCheck, Spark DTX Portal + Approver, ClearCorrect
+Doctor Portal + ClearPilot, Angel iOrtho):
+
+| Area | What the doctor gets |
+| --- | --- |
+| **Dashboard** | "Needs your attention" queue (plans to review, record requests, deliveries, unread messages), KPIs, patients in treatment with aligner progress, shipments in transit, activity feed |
+| **New case** | 4-step wizard: patient & product (Comprehensive / Moderate / Lite / Express) → one-page clinical Rx (A-P, overjet, overbite, midline, crossbite, expansion / proclination / IPR, attachments, tooth chart for *do not move* / *no attachments* / *extract*) → records (8 photos, pano, ceph, upper/lower STL; drag & drop) → review & submit. Pre-filled from saved clinical preferences; drafts auto-save |
+| **Case page** | Status pipeline (Submitted → Planning → Your review → Manufacturing → Shipped → In treatment → Retention), timeline, Rx, records gallery, per-case messaging, shipments and invoices, refinements, retainers, cancel |
+| **Plan review** | Versioned plans; occlusal arch chart coloured by movement with attachments and IPR; click a tooth for its 6-DOF movement and to leave a tooth comment; movement table; IPR schedule; automatic checks against protocol limits, the doctor's Rx (e.g. "do not move" teeth that move) and the product's aligner limit; approve (with confirmation) or request modification |
+| **Billing** | Invoices (case fee on first approval, retainers on order), outstanding balance, fee schedule |
+| **Preferences** | Clinical preferences (attachments, IPR limits and timing, wear schedule, expansion, passive aligners, overcorrection, retention, free-text rules) – also downloadable as a studio `*.protocol.json`; account and shipping address |
+
+The **Smile Craft team** side (switch with *Demo view* in the sidebar, or sign in as Smile Craft) accepts
+records or asks for new ones, uploads the plan exported from the studio (*Export → Plan summary (JSON)*,
+optionally with the `.smile` project), sends to manufacturing and ships with tracking. Open the portal in two
+tabs (doctor + Smile Craft) to play both sides – tabs stay in sync.
+
+Demo mode keeps all data in the browser (case data in localStorage, files in IndexedDB) with fictional
+sample cases; *Preferences → Restore demo data* resets it. Prices in `src/portal/model.ts` are placeholders.
+Before real patients: put `src/portal/store.ts` behind an authenticated backend (it is the only data
+access layer), add real sign-in, storage and payments, and review data-protection requirements.
+
 ## How the numbers are computed (accuracy)
 
 All units are millimetres and degrees in the original scan coordinates — nothing is rescaled.
@@ -90,7 +115,7 @@ Locally (Node 20+):
 
 ```bash
 npm install
-npm run dev      # http://localhost:5173
+npm run dev      # studio: http://localhost:5173 · portal: http://localhost:5173/portal.html
 npm test         # unit + geometry tests
 npm run build    # static site in dist/
 ```
@@ -107,6 +132,7 @@ src/geometry/   mesh work: scan I/O, watershed segmentation, tooth frames, gum-f
                 deformation, contact measurement, attachment solids, demo arches
 src/engine/     app state (zustand), three.js viewer, studio orchestrator, project files, export
 src/ui/         React panels for each workflow step
+src/portal/     doctor portal: model, workflow rules, store (data access), seed data, ui/
 tests/          vitest suites
 ```
 
